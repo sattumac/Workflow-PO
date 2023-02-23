@@ -1,0 +1,78 @@
+**************************************************************************
+*   Method attributes.                                                   *
+**************************************************************************
+Instantiation: Public
+**************************************************************************
+
+  METHOD set_pr_initiator_text.
+    DATA: lt_subcontainer      TYPE STANDARD TABLE OF swr_cont,
+          lt_simple_container  TYPE STANDARD TABLE OF swr_cont,
+          lv_sy_subrc          TYPE sy-subrc,
+          lv_xml_container     TYPE xstring,
+          lv_xml_schema        TYPE xstring,
+          lv_approval_comments TYPE string,
+          lv_level             TYPE i,
+          lv_level_s           TYPE string.
+*--------------------------------------------------------------------*
+*-- Read Container
+    CALL FUNCTION 'SAP_WAPI_READ_CONTAINER'
+      EXPORTING
+        workitem_id              = workitem_id
+      IMPORTING
+        return_code              = lv_sy_subrc
+        ifs_xml_container        = lv_xml_container
+        ifs_xml_container_schema = lv_xml_schema
+      TABLES
+        simple_container         = lt_simple_container[]
+        subcontainer_all_objects = lt_subcontainer[].
+
+    IF lt_subcontainer[] IS NOT INITIAL.
+      IF line_exists( lt_subcontainer[ element = 'PURCHASEREQUISITION' ] ).
+        DATA(purchase_requisition) = CONV banfn( lt_subcontainer[ element = 'PURCHASEREQUISITION' ]-value+0(10) ).
+
+*-- Calculate total amount in PR
+        SELECT FROM eban FIELDS CAST( SUM( menge * division( preis, peinh,2 ) )  AS DEC( 15,2 )  )  AS total_amount,
+                                                                    waers AS currency
+          WHERE banfn = @purchase_requisition
+          GROUP BY banfn,waers
+          INTO TABLE @DATA(total_pr_value).
+
+        IF sy-subrc EQ 0.
+          DATA(usertext) = zzcl_email_text=>get_username_text( username = username ).
+*-- Get comments
+          CALL METHOD zzcl_email_text=>get_approval_comments
+            EXPORTING
+              workitem_id       = p_wi_id
+            IMPORTING
+              approval_comments = lv_approval_comments
+              level             = lv_level.
+
+*-- Get the release indicator
+          SELECT SINGLE frgkz FROM eban INTO @DATA(lv_frgkz) WHERE banfn = @purchase_requisition AND loekz = @space. "#EC CI_NOORDER or "#EC WARN_OK
+          IF sy-subrc EQ 0.
+            lv_level_s = strlen( lv_frgkz ).
+          ENDIF.
+*-- Currency Conversion
+          DATA(ls_pr_value) = total_pr_value[ 1 ]."#EC CI_NOORDER or "#EC WARN_OK
+          DATA lv_amount TYPE char100.
+          WRITE ls_pr_value-total_amount TO lv_amount CURRENCY ls_pr_value-currency .
+*          lv_amount = lv_amount / 10.
+          CONDENSE lv_amount.
+          DATA(total_pr_value_) = |{ lv_amount } { total_pr_value[ 1 ]-currency }|.
+
+*-- Replace all Variables
+*            DATA(total_pr_value_) = |{ total_pr_value[ 1 ]-total_amount } { total_pr_value[ 1 ]-currency }|.
+          REPLACE '&1' WITH purchase_requisition INTO l_text_prolog.
+          REPLACE '&2' WITH total_pr_value_ INTO l_text_prolog.
+          REPLACE '&3' WITH  usertext INTO l_text_prolog.
+          REPLACE '&4' WITH  p_wi_id INTO l_text_prolog.
+          REPLACE '&5' WITH  lv_level_s INTO l_text_prolog.
+          REPLACE '&6' WITH  lv_approval_comments INTO l_text_prolog.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+  ENDMETHOD.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

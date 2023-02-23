@@ -1,0 +1,53 @@
+FUNCTION-POOL zzfg_mm_po_email.             "MESSAGE-ID ..
+
+* INCLUDE LZZFG_MM_PO_EMAILD...              " Local class definition
+
+DATA: gv_ebeln TYPE ebeln.
+
+TABLES : t001, adrc, ekko, lfa1, but020, adr6,
+         dfkkbptaxnum, user_addr, usr21,
+         j_1imocomp, t001w,  j_1bt001wv, j_1bbranch,
+         t052, ekpo, marc, prcd_elements, konp.
+
+*DATA: it_po    TYPE TABLE OF zsf_po_form,
+*      wa_po    TYPE zsf_po_form,
+*      it_tab   TYPE TABLE OF ZSF_PO_FORM_ss,
+*      it_tab1  TYPE TABLE OF ZSF_PO_FORM_ss,
+*      wa_tab   TYPE zsf_po_form_ss,
+*      it_mwdat TYPE TABLE OF rtax1u15.
+
+***************************Internal tables and work area*******************************************
+DATA : gt_ekko TYPE TABLE OF ekko,
+       gw_ekko TYPE  ekko,
+       gt_ekpo TYPE TABLE OF ekpo,
+       gw_ekpo TYPE ekpo,
+       it_t001 TYPE TABLE OF t001,
+       wa_t001 TYPE t001,
+       it_adrc TYPE TABLE OF adrc,
+       wa_adrc TYPE adrc.
+
+*DATA : fname   TYPE tdsfname VALUE 'ZSF_MM_PO_FORM', "
+*       fm_name TYPE rs38l_fnam.
+
+DATA : gv_name LIKE thead-tdname .
+DATA : p_ebeln TYPE ebeln.
+DATA: lv_snro  TYPE n LENGTH 2,
+      lv_amt   TYPE p DECIMALS 2,
+      lv_grand TYPE p DECIMALS 2,
+      gv_bill  TYPE werks,
+      gv_delv  TYPE werks,
+      lv_bill  TYPE c,
+      lv_delv  TYPE c.
+
+CONSTANTS: lv_spras TYPE spras VALUE 'E',
+           lv_land1 TYPE land1 VALUE 'IN'.
+
+DATA: it_gst TYPE TABLE OF j_1bt001wv.
+
+DATA: lv_bukrs TYPE bkpf-bukrs,
+      lv_mwskz TYPE bseg-mwskz,
+      lv_waers TYPE bkpf-waers,
+      lv_wrbtr TYPE bseg-wrbtr.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

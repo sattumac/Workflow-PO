@@ -1,0 +1,91 @@
+**************************************************************************
+*   Method attributes.                                                   *
+**************************************************************************
+Instantiation: Public
+**************************************************************************
+
+  METHOD set_po_approver_text.
+    DATA: lt_subcontainer     TYPE STANDARD TABLE OF swr_cont,
+          lt_simple_container TYPE STANDARD TABLE OF swr_cont,
+          lv_sy_subrc         TYPE sy-subrc,
+          lv_xml_container    TYPE xstring,
+          lv_xml_schema       TYPE xstring.
+*--------------------------------------------------------------------*
+*-- Read the workflow information
+    CALL FUNCTION 'SAP_WAPI_READ_CONTAINER'
+      EXPORTING
+        workitem_id              = workitem_id
+      IMPORTING
+        return_code              = lv_sy_subrc
+        ifs_xml_container        = lv_xml_container
+        ifs_xml_container_schema = lv_xml_schema
+      TABLES
+        simple_container         = lt_simple_container[]
+        subcontainer_all_objects = lt_subcontainer[].
+
+    IF lt_subcontainer[] IS NOT INITIAL.
+      IF line_exists( lt_subcontainer[ element = 'PURCHASEORDER' ] ).
+        DATA(purchase_order) = CONV ebeln( lt_subcontainer[ element = 'PURCHASEORDER' ]-value+0(10) ).
+*-- Calculate total amount in PR
+        SELECT FROM ekpo AS a INNER JOIN ekko AS b ON a~ebeln = b~ebeln
+                              INNER JOIN lfa1 AS c ON b~lifnr = c~lifnr
+          FIELDS COUNT( a~ebelp ) AS total_lineitem,
+                 b~waers AS currency,
+                 b~bukrs AS company_code,
+                 b~ekorg AS po_org,
+                 b~ekgrp AS Purchasing_Group,
+                 b~aedat AS creation_date,
+                 b~lifnr AS supplier,
+                 concat_with_space( c~name1, c~name2 , 1 ) AS supplier_name,
+                 a~peinh AS perunit,
+                 CAST( SUM( a~menge * a~netpr ) AS DEC( 15,2 ) ) AS total_amount
+          WHERE a~ebeln = @purchase_order
+          GROUP BY a~ebeln,b~waers,b~bukrs,b~ekorg,b~ekgrp,b~aedat,b~lifnr,c~name1, c~name2, a~peinh
+          INTO TABLE @DATA(total_po_value).
+
+        IF sy-subrc EQ 0.
+          DATA(usertext) = zzcl_email_text=>get_username_text( username = username ).
+
+*-- Currency Conversion
+          DATA(po_details)      = total_po_value[ 1 ]. "#EC CI_NOORDER or "#EC WARN_OK
+          DATA lv_amount TYPE char100.
+          DATA tamount TYPE p DECIMALS 2.
+*          IF po_details-perunit = 10.
+          tamount = po_details-total_amount / po_details-perunit.
+            WRITE tamount TO lv_amount CURRENCY po_details-currency .
+            CONDENSE lv_amount.
+*          ELSE.
+*          WRITE po_details-total_amount TO lv_amount CURRENCY po_details-currency .
+*          CONDENSE lv_amount.
+*          ENDIF.
+          DATA(total_po_value_) = |{ lv_amount } { total_po_value[ 1 ]-currency }|.
+
+          DATA: lv_total_lineitem TYPE string,
+                lv_po_date        TYPE string.
+*-- total Line items
+          lv_total_lineitem = po_details-total_lineitem.
+          po_details-supplier = |{ po_details-supplier ALPHA = OUT }|. " Supplier Information
+*-- PO date format DD.MM.YYYY
+          lv_po_date = |{ po_details-creation_date+6(2) }.{ po_details-creation_date+4(2) }.{ po_details-creation_date+0(4) }|.
+
+*-- Replace all charatcers
+          REPLACE '&1' WITH  usertext INTO l_text_prolog.
+          REPLACE '&2' WITH  purchase_order INTO l_text_prolog.
+          REPLACE '&3' WITH  total_po_value_ INTO l_text_prolog.
+          REPLACE '&4' WITH  po_details-company_code INTO l_text_prolog.
+          REPLACE '&5' WITH  po_details-purchasing_group INTO l_text_prolog.
+          REPLACE '&6' WITH  po_details-po_org INTO l_text_prolog.
+          REPLACE '&7' WITH  lv_po_date INTO l_text_prolog.
+          REPLACE '&8' WITH  po_details-supplier_name INTO l_text_prolog.
+          REPLACE '&9' WITH  po_details-supplier INTO l_text_prolog.
+          REPLACE '&10' WITH lv_total_lineitem INTO l_text_prolog.
+          REPLACE '&11' WITH p_wi_id INTO l_text_prolog.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+    CLEAR: lv_total_lineitem.
+
+  ENDMETHOD.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

@@ -1,0 +1,799 @@
+FUNCTION zzfm_mm_po_email.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     VALUE(IV_EBELN) TYPE  EBELN
+*"     VALUE(IM_EKKO) TYPE  EKKO OPTIONAL
+*"     VALUE(IM_EKPO) TYPE  MMPR_UEKPO OPTIONAL
+*"     VALUE(IM_EKET) TYPE  MMPR_UEKET OPTIONAL
+*"     VALUE(IM_KOMV) TYPE  KOMV_TAB OPTIONAL
+*"  EXPORTING
+*"     VALUE(EV_RETURN) TYPE  CHAR1
+*"----------------------------------------------------------------------
+*&-----------------------------------------------------------------   *
+*& RICEFW Tech. Name :
+*& Tech Constultant  : Amey Bapat ext_ameybapa/ Karishma Rokade ext_kariroka
+*& Func. Consultant  : Pranay Dalvi
+*& Created Date      :
+*& Module            : MM
+*& RICEFW Name       : PO Email to vendor with release strategy/ without release strategy
+*& Transaction Code  : NA
+*& RICEFW Object ID  : TO BE SHARED
+*& Intial TR         :
+*& Document ID/No.   : TO BE SHARED
+*& Description       : At the Time of Release Email will be triggered to vendor and initiator/
+*                      At time of save (me21n, me22n, me23n and my inbox app)non release strategy will get triggered.
+*&--------------------------------------------------------------------*
+* Modification History   - ID/Date(DD-MM-YYYY)/TR/ID/Change Text      *
+* RBDK902052  KPMG:ABAP:WR:Bulk issue resolution V1           19.11.2022  10:44:33  EXT_AMEYBAPA
+* RBDK901615  KPMG:ABAP:MM: Change in mail draft Indonesia    08.10.2022  12:23:30  EXT_AMEYBAPA
+* RBDK901425  KPMG:MM:vendor email change RBD_P00001          22.09.2022  17:51:56  EXT_AMEYBAPA
+* RBDK901410  KPMG:MM:ABAP Vendor email change                19.09.2022  16:23:32  EXT_AMEYBAPA
+* RBDK901404  KMPG:MM:ABAP:email vendor change update         19.09.2022  14:00:55  EXT_AMEYBAPA
+* RBDK901400  KMPG:MM:ABAP:email vendor change                19.09.2022  12:45:05  EXT_AMEYBAPA
+* RBDK900967  KPMG:GK:PR mail V.2                             28.08.2022  14:05:15  EXT_AMEYBAPA
+*  RBDK902114 KPMG:ABAP:WR: For vendor email subject line changes   25.11.2022  11:20:37  EXT_AMEYBAPA
+
+* SNEHCHOU/RBDK902079/19-NOV-22/ Adding all Email ID at Vendor Level
+*RBDK902094 WR:MM:vendor email trigger for non release strategy 22.11.2022          EXT_KARIROKA
+*---------------------------------------------------------------------*
+*--Local Declaration
+
+  TYPES: BEGIN OF ty_ekko,
+           ebeln TYPE  ekko-ebeln,
+           lifnr TYPE  ekko-lifnr,
+           bedat TYPE  ekko-bedat,
+           ernam TYPE  ekko-ernam,
+           ekorg TYPE  ekko-ekorg,
+           bsart TYPE  ekko-bsart,
+           name1 TYPE  lfa1-name1,
+           name2 TYPE  lfa1-name2,
+           adrnr TYPE  lfa1-adrnr,
+         END OF ty_ekko.
+
+  DATA: ls_ekko TYPE ty_ekko.
+
+  DATA : i_mail           TYPE  bcsy_text,
+         i_mailcc         TYPE  bcsy_text,
+         i_text           TYPE  bcsy_text,
+         i_pdf_attachment TYPE  solix_tab,
+         i_subject        TYPE  so_obj_des,
+         pdf_size         TYPE  sood-objlen,
+         fieldcatalog     TYPE  lvc_t_fcat,
+         filename         TYPE  string,
+         so10_text_name   TYPE  thead-tdname,
+         i_type           TYPE  so_obj_tp  VALUE 'RAW',
+         return_message   TYPE  bapiret2_t.
+  DATA : s_mail   TYPE soli,
+         s_mailcc TYPE soli,
+         "i_text TYPE bcsy_text,
+         s_text   TYPE soli.
+  DATA: BEGIN OF it_itcoo1 OCCURS 0.
+          INCLUDE STRUCTURE itcoo.
+  DATA: END OF it_itcoo1.
+  DATA  : "filename TYPE string,
+            subject  TYPE so_obj_des.
+  DATA:
+    lt_pdf_tab        TYPE STANDARD TABLE OF tline,
+    lt_binary_content TYPE solix_tab.
+
+  DATA: lv_bin_filesize TYPE so_obj_len,
+        lv_sent_to_all  TYPE os_boolean,
+        lv_bin_xstr     TYPE xstring,
+        lv_fname        TYPE rs38l_fnam,
+        lv_string_text  TYPE string.
+
+*--Get Header Data from tables
+
+  gv_ebeln = iv_ebeln.
+  SELECT SINGLE ekko~ebeln   "" Code Added By SC - TR to be updated
+                ekko~lifnr
+                ekko~bedat
+                ekko~ernam
+                ekko~ekorg
+                ekko~bsart
+                lfa1~name1
+                lfa1~name2
+                lfa1~adrnr
+           FROM ekko AS ekko
+           LEFT OUTER JOIN lfa1 AS lfa1
+           ON ( ekko~lifnr EQ lfa1~lifnr )
+           INTO ls_ekko  "" Commented - Put TR here @DATA(ls_ekko)
+           WHERE ekko~ebeln EQ iv_ebeln.
+
+  IF sy-subrc = 0.
+****        "do nothing as this is triggered from Backgorund job for PO with Release stategy
+  ELSE.
+****    " This is when the PO is not applicable for Release strategy and deed as Auto Apporove
+*****    RBDK902094 SOC by ext_kariroka 22.11.2022.
+    IF im_ekko IS NOT INITIAL AND im_ekpo IS  NOT INITIAL..
+      ls_ekko-ebeln   = im_ekko-ebeln.
+      ls_ekko-lifnr   = im_ekko-lifnr.
+      ls_ekko-bedat   = im_ekko-bedat.
+      ls_ekko-ernam   = im_ekko-ernam.
+      ls_ekko-ekorg   = im_ekko-ekorg.
+      ls_ekko-bsart   = im_ekko-bsart.
+
+      SELECT SINGLE lifnr,
+                    adrnr,
+                    name1,
+                    name2
+               FROM lfa1
+         INTO @DATA(ls_lfa1)
+         WHERE lifnr = @ls_ekko-lifnr.
+
+      IF sy-subrc = 0.
+        ls_ekko-name1  = ls_lfa1-name1.
+        ls_ekko-name2   = ls_lfa1-name2.
+        ls_ekko-adrnr   = ls_lfa1-adrnr.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+******EOC by ext_kariroka 22.11.2022
+***BOC - RBDK902079 - 19/Nov/2022 - SNEHCHOU
+  IF ls_ekko-ekorg EQ 'ID00'.
+    SELECT smtp_addr FROM adr6 INTO TABLE @DATA(lt_email) WHERE addrnumber EQ @ls_ekko-adrnr.
+    IF lt_email IS INITIAL.
+      s_mail-line = 'update_vendor_email@dummy.com'.
+      APPEND s_mail TO i_mail.
+      CLEAR: s_mail.
+    ELSE.
+      CLEAR:s_mail.
+      LOOP AT lt_email ASSIGNING FIELD-SYMBOL(<fs_email>).
+        CONDENSE <fs_email>-smtp_addr.
+        s_mail-line = <fs_email>-smtp_addr.
+        APPEND s_mail TO i_mail.
+        CLEAR:s_mail.
+      ENDLOOP.
+      SORT i_mail BY line.
+      DELETE ADJACENT DUPLICATES FROM i_mail COMPARING line.
+    ENDIF.
+
+    """ For Adding SCM Goup ID in CC for Indonesia only.
+    SELECT SINGLE low
+             FROM tvarvc INTO @DATA(lv_email_cc_idn)
+             WHERE name = 'ZZMM_VENDOR_PO_MAILCC_IDN'.
+    IF lv_email_cc_idn IS NOT INITIAL.
+      CLEAR: s_mailcc.
+      s_mailcc-line = lv_email_cc_idn.
+      APPEND s_mailcc TO i_mailcc.
+      CLEAR: s_mailcc.
+    ENDIF.
+
+  ELSE.
+***EOC - RBDK902079 - 19/Nov/2022 - SNEHCHOU
+*****SOC by amey  RBDK902079 - 19/Nov/2022
+    IF ls_ekko-adrnr IS NOT INITIAL.
+*      SELECT smtp_addr FROM adr6 INTO TABLE @DATA(lv_email) WHERE addrnumber EQ @ls_ekko-adrnr.
+**--Set Receipienti
+*      IF lv_email IS INITIAL.
+*        lv_email = 'update_vendor_email@dummy.com'.
+*      ENDIF.
+*      s_mail-line = lv_email.
+*      APPEND s_mail TO i_mail.
+*      CLEAR: s_mail.
+***************************     soc by amey
+      SELECT smtp_addr FROM adr6 INTO TABLE @lt_email WHERE addrnumber EQ @ls_ekko-adrnr.
+      IF lt_email IS INITIAL.
+        s_mail-line = 'update_vendor_email@dummy.com'.
+        APPEND s_mail TO i_mail.
+        CLEAR: s_mail.
+      ELSE.
+        CLEAR:s_mail.
+        LOOP AT lt_email ASSIGNING FIELD-SYMBOL(<fs_email1>).
+          CONDENSE <fs_email1>-smtp_addr.
+          s_mail-line = <fs_email1>-smtp_addr.
+          APPEND s_mail TO i_mail.
+          CLEAR:s_mail.
+        ENDLOOP.
+        SORT i_mail BY line.
+        DELETE ADJACENT DUPLICATES FROM i_mail COMPARING line.
+      ENDIF.
+*****************************      soc by amey 09.01.2023.
+*      IF ls_ekko-ekorg EQ 'AE00'.
+*        SELECT low
+*                    FROM tvarvc INTO TABLE @DATA(lv_email_cc_uae)
+*                    WHERE name = 'ZZMM_VENDOR_PO_MAILCC_UAE'.
+*        IF lv_email_cc_uae IS NOT INITIAL.
+*          CLEAR: s_mailcc.
+*          LOOP AT lv_email_cc_uae INTO DATA(ls_email_cc_uae).
+*            s_mailcc-line = ls_email_cc_uae-low.
+*            APPEND s_mailcc TO i_mailcc.
+*          ENDLOOP.
+*          CLEAR: s_mailcc.
+*        ENDIF.
+*      ENDIF.
+
+*************************************      eoc by amey 09.01.2023.
+******************************      eoc by amey.
+***BOC - RBDK902079 - 19/Nov/2022 - SNEHCHOU
+    ENDIF.
+  ENDIF.
+***EOC - RBDK902079 - 19/Nov/2022 - SNEHCHOU
+
+*--PO User Email
+  SELECT SINGLE usr21~bname, usr21~persnumber, usr21~addrnumber,adr6~smtp_addr
+    FROM usr21 AS usr21
+    INNER JOIN adr6
+    ON  usr21~persnumber EQ adr6~persnumber
+    AND usr21~addrnumber EQ adr6~addrnumber
+    INTO @DATA(ls_poemail) WHERE usr21~bname EQ @ls_ekko-ernam.
+  IF sy-subrc IS INITIAL.
+    s_mailcc-line = ls_poemail-smtp_addr.
+    APPEND s_mailcc TO i_mailcc.
+    CLEAR: s_mailcc.
+  ENDIF.
+
+*---PR Email
+  SELECT SINGLE banfn FROM ekpo INTO @DATA(lv_banfn) WHERE ebeln EQ @iv_ebeln.
+  IF sy-subrc IS INITIAL.
+    SELECT SINGLE ernam FROM eban INTO @DATA(lv_pruser) WHERE banfn EQ @lv_banfn.
+    IF sy-subrc IS INITIAL.
+      SELECT SINGLE usr21~bname, usr21~persnumber, usr21~addrnumber,adr6~smtp_addr
+        FROM usr21 AS usr21
+        INNER JOIN adr6
+        ON  usr21~persnumber EQ adr6~persnumber
+        AND usr21~addrnumber EQ adr6~addrnumber
+        INTO @DATA(ls_premail) WHERE usr21~bname EQ @lv_pruser.
+      IF sy-subrc IS INITIAL.
+        s_mailcc-line = ls_premail-smtp_addr.
+        APPEND s_mailcc TO i_mailcc.
+        CLEAR: s_mailcc.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+  SELECT low FROM tvarvc INTO TABLE @DATA(lv_vendor) WHERE name = 'ZZMM_NOMAILVENDOR'.
+  CASE ls_ekko-ekorg.
+    WHEN 'AE00'.
+*    PERFORM zemforuae.
+*--Email Body Prepare
+*      select single
+      SHIFT ls_ekko-lifnr LEFT DELETING LEADING '0'.
+      READ TABLE lv_vendor INTO DATA(ls_vendor2) WITH KEY low = ls_ekko-lifnr.
+      IF sy-subrc NE 0.
+        IF sy-sysid EQ 'RBQ' OR sy-sysid EQ 'RBD'.
+
+          i_subject  = |Rebel Purchase order: { iv_ebeln ALPHA = OUT } - { sy-sysid }.|.
+        ELSE.
+          i_subject  = |Rebel Purchase order: { iv_ebeln ALPHA = OUT }|.
+        ENDIF.
+        s_text-line = |Dear { ls_ekko-name1 }, |.
+        APPEND s_text TO i_text .
+        s_text-line = ' '. "| |.
+        APPEND s_text TO i_text .
+        s_text-line = |Referring to your quote and discussion with us, attached is the Purchase Order to be read along with the price annexure (as applicable).|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Purchase Order No: { iv_ebeln ALPHA = OUT }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Date: { ls_ekko-bedat+6(2) }.{ ls_ekko-bedat+4(2) }.{ ls_ekko-bedat+0(4) }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |VENDOR NAME :  { ls_ekko-name1 } { ls_ekko-name2 }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |You are requested to confirm receipt of the PO as well as acceptance of the PO.|.
+        APPEND s_text TO i_text .
+        s_text-line = |It shall be considered as deemed acceptance in case of non-receipt of acceptance of the PO from you as per the Terms and Conditions referred in the PO.|.
+        APPEND s_text TO i_text .
+        s_text-line = |Please initiate the delivery/service and submit the invoice with supporting documents for the billing process once material/service is delivered.|.
+        APPEND s_text TO i_text .
+        s_text-line = |To streamline the invoice booking and payment release please adhere to the Invoice Processing / Supporting / POD / Transportation checklist and guidelines at your end before submitting the invoice.|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Invoice Processing Checklist :|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+*      s_text-line = |• Invoice should be original with Rebel’s tax registration and Vendor's tax registration number|.
+*      APPEND s_text TO i_text .
+        s_text-line = |• Invoice number and date is mandatory along with place of supply|.
+        APPEND s_text TO i_text .
+*      s_text-line = |• Rebel’s Complete Name “Rebel Internet Restaurants DMCC or Rebel Food Restaurant LLC.”|.
+*      APPEND s_text TO i_text .
+        s_text-line = |• Complete Shipping and Billing address|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Complete Name, Address & Vat certificate of Vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Signature and Stamp of the Vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |• In case of computer generated invoice it should be digitally signed by the vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Proof of Delivery (POD) :|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |• Clear copy of POD is a must for all consignments delivered at kitchens.|.
+        APPEND s_text TO i_text .
+        s_text-line = |Kitchen representative’s sign & Rebel’s Stamp is a must for processing of any invoice Transportation :|.
+        APPEND s_text TO i_text .
+        IF sy-sysid EQ 'RBQ' OR sy-sysid EQ 'RBD'.
+          s_text-line = |This mail is for testing purpose kindly ignore the same. |.
+          APPEND s_text TO i_text .
+        ENDIF.
+*************SOC by ext_ameybapa on 18.11.2022 for bulk release issue.
+        DATA : gs_op_info1 TYPE ssfcrescl.
+
+        CALL FUNCTION 'ZZFM_MM_PO_EMAIL_UAE'
+          EXPORTING
+            iv_ebeln   = iv_ebeln
+            im_ekko    = im_ekko
+            im_ekpo    = im_ekpo
+            im_eket    = im_eket
+            im_komv    = im_komv
+          IMPORTING
+            gs_op_info = gs_op_info1.
+        .
+
+
+        DATA : otfdata TYPE tsfotf.
+        otfdata = gs_op_info1-otfdata.
+*      IMPORT otfdata FROM MEMORY ID 'ZM_OTFDATA'.
+        CLEAR:it_itcoo1[].
+        LOOP AT otfdata INTO DATA(w_otf1).
+          APPEND w_otf1 TO it_itcoo1.
+          CLEAR w_otf1.
+        ENDLOOP.
+
+
+        CALL FUNCTION 'CONVERT_OTF'
+          EXPORTING
+            format                = 'PDF'
+          IMPORTING
+            bin_filesize          = lv_bin_filesize
+            bin_file              = lv_bin_xstr
+          TABLES
+            otf                   = it_itcoo1 "st_job_output_info-otfdata
+            lines                 = lt_pdf_tab[]
+          EXCEPTIONS
+            err_max_linewidth     = 1
+            err_format            = 2
+            err_conv_not_possible = 3
+            OTHERS                = 4.
+        IF sy-subrc <> 0.
+          MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+                  WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+        ENDIF.
+***Xstring to binary
+        CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+          EXPORTING
+            buffer     = lv_bin_xstr
+          TABLES
+            binary_tab = lt_binary_content.
+        i_pdf_attachment = lt_binary_content.
+
+        filename = |Purchase Order: { iv_ebeln ALPHA = OUT }|.
+*--Process for Email.
+        zcl_email_utility=>send_data(
+          EXPORTING
+            i_mail                     = i_mail[]                " Text Table
+            i_mailcc                   = i_mailcc[]
+            i_text                     = i_text[]                 " Text Table
+            i_pdf_attachment           = i_pdf_attachment                  " GBT: SOLIX as Table Type
+            i_subject                  = i_subject                 " Short description of contents
+            pdf_size                   = lv_bin_filesize "pdf_size                 " Size of Document Content
+            filename                   = filename
+            so10_text_name             = so10_text_name
+        IMPORTING
+          return_message               =  return_message                " Return table
+        ).
+        CLEAR: i_mail[],i_mailcc[],i_text[].
+        READ TABLE return_message INTO DATA(ls_return) WITH KEY type = 'E'.
+        IF sy-subrc IS INITIAL.
+          ev_return = 'E'.
+        ELSE.
+          ev_return = 'S'.
+        ENDIF.
+*********  EOC by ext_ameybapa for bulk release issue.
+      ENDIF.
+******************************************************************************************************************************
+    WHEN 'IN00'.
+*    PERFORM zemforindia.
+*--Email Body Prepare
+*      BREAK ext_ameybapa.
+            SHIFT ls_ekko-lifnr LEFT DELETING LEADING '0'.
+      READ TABLE lv_vendor INTO DATA(ls_vendor) WITH KEY low = ls_ekko-lifnr.
+      IF sy-subrc NE 0.
+        IF sy-sysid EQ 'RBQ' OR sy-sysid EQ 'RBD'.
+          i_subject  = |Rebel Purchase order: { iv_ebeln ALPHA = OUT } - { sy-sysid }.|.
+        ELSE.
+          i_subject  = |Rebel Purchase order: { iv_ebeln ALPHA = OUT }|.
+        ENDIF.
+*      i_subject  = |Rebel Purchase order: { iv_ebeln ALPHA = OUT }|.
+        s_text-line = |Dear { ls_ekko-name1 }, |.
+        APPEND s_text TO i_text .
+        s_text-line = ' '. "| |.
+        APPEND s_text TO i_text .
+        s_text-line = |Referring to your quote and discussion with us, attached is the Purchase Order to be read along with the price annexure (as applicable).|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Purchase Order No: { iv_ebeln ALPHA = OUT }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Date: { ls_ekko-bedat+6(2) }.{ ls_ekko-bedat+4(2) }.{ ls_ekko-bedat+0(4) }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |VENDOR NAME  :  { ls_ekko-name1 } { ls_ekko-name2 }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |You are requested to confirm receipt of the PO as well as acceptance of the PO.|.
+        APPEND s_text TO i_text .
+        s_text-line = |It shall be considered as deemed acceptance in case of non-receipt of acceptance of the PO from you as per the Terms and Conditions referred in the PO.|.
+        APPEND s_text TO i_text .
+        s_text-line = |Please initiate the delivery/service and submit the invoice with supporting documents for the billing process once material/service is delivered.|.
+        APPEND s_text TO i_text .
+        s_text-line = |To streamline the invoice booking and payment release please adhere to the Invoice Processing / Supporting / POD / Transportation checklist and guidelines at your end before submitting the invoice.|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Invoice Processing Checklist :|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |• Invoice should be original with Rebel’s GSTIN and Vendor GSTIN|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Invoice number and date is mandatory along with place of supply|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Rebel’s Complete Name “Rebel Foods Pvt. Ltd.”|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Complete Shipping and Billing address|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Complete Name, Address of Vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Signature and Stamp of the Vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |• In case of computer generated invoice it should be digitally signed by the vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Item details i.e. description, quantity, unit, total value to be clearly mentioned|.
+        APPEND s_text TO i_text .
+        s_text-line = |• HSN code / SAC code of items to be clearly mentioned|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Taxable value and discounts|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Rate and amount of taxes should be clearly mentioned i.e. GST/ SGST/ IGST/UTGST (clearly mention whether GST is payable on reverse charge basis) |.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Supporting Checklist:|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |• Xerox copy of any supporting will not be accepted|.
+        APPEND s_text TO i_text .
+        s_text-line = |• For Civil and Interior work measurement sheet is compulsory which Contains Description, UOM, Rate and should be signed & stamped by the vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |• The amount and rate mentioned in supporting should match with invoice|.
+        APPEND s_text TO i_text .
+        s_text-line = |• In case of license or any reimbursement fees paid to the vendor then supporting document should be attached which contains amount and location (Kitchen name in case of License) is compulsory|.
+        APPEND s_text TO i_text .
+        s_text-line = |• For leasehold work, quantity needs to be certified by project engineer with Rebel stamp & signature. If invoices received without the same it will be rejected immediately|.
+        APPEND s_text TO i_text .
+        s_text-line = |• BOQ items to be followed in totality. No additional items to be incorporated if its not there in BOQ|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Invoice to be generated post certification of measurement sheet|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Invoice value can be less than PO value but in no circumstances it should not exceed the PO value|.
+        APPEND s_text TO i_text .
+        s_text-line = |• In case of multiple delivery in the same state, we will mail you the delivery address details while circulating PO, all invoices should come as per delivery address of actual delivery|.
+        APPEND s_text TO i_text .
+        s_text-line = |• In case of Central Kitchen material delivery, the Rebel stamp, sign and employee id of receiver is compulsory|.
+        APPEND s_text TO i_text .
+        s_text-line = |Proof of Delivery (POD) :|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Clear copy of POD is a must for all consignments delivered at kitchens|.
+        APPEND s_text TO i_text .
+        s_text-line = |Kitchen representative’s sign & Rebel’s Stamp is a must for processing of any invoice |.
+        APPEND s_text TO i_text .
+        s_text-line = | Transportation : |.
+        APPEND s_text TO i_text .
+        s_text-line = |• If vendor has charged transportation charges then original challan/LR copy is compulsory which contains Invoice number and amount|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Transporter delivery challan (LR copy) mentioning proper delivery city is must to avoid invoice rejection.|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Declaration required on company letter head if LR not available for local movements|.
+        APPEND s_text TO i_text .
+        s_text-line = |• In case transportation is mentioned at actual - Rate approval to be taken mandatorily from the procurement function prior dispatch of material.|.
+        APPEND s_text TO i_text .
+        IF sy-sysid EQ 'RBQ' OR sy-sysid EQ 'RBD'.
+          s_text-line = |                                                                                    |.
+          APPEND s_text TO i_text .
+          s_text-line = | ********************* This mail is for testing purpose kindly ignore the same. ****************************** |.
+          APPEND s_text TO i_text .
+        ENDIF.
+*
+        DATA : gs_op_info3 TYPE ssfcrescl.
+
+**********************soc BY AMEY 03.12.2022
+        IF ls_ekko-bsart = 'ZIMP'.
+*****************************        ADD CAPEX CODE HERE
+          CALL FUNCTION 'ZZFM_MM_PO_EMAIL_IN_CAPEX1'
+            EXPORTING
+              iv_ebeln   = iv_ebeln
+              im_ekko    = im_ekko
+              im_ekpo    = im_ekpo
+              im_eket    = im_eket
+              im_komv    = im_komv
+              flag       = ' '
+            IMPORTING
+              gs_op_info = gs_op_info3.
+        ELSE.
+          CALL FUNCTION 'ZZFM_MM_PO_EMAIL_IN'
+            EXPORTING
+              iv_ebeln   = iv_ebeln
+              im_ekko    = im_ekko
+              im_ekpo    = im_ekpo
+              im_eket    = im_eket
+              im_komv    = im_komv
+*             FLAG       =
+            IMPORTING
+              gs_op_info = gs_op_info3.
+        ENDIF.
+************************** EOC BY AMEY.
+        DATA : otfdata1 TYPE tsfotf.
+        otfdata1 = gs_op_info3-otfdata.
+*      IMPORT otfdata1 FROM MEMORY ID 'ZM_OTFDATA'.
+        CLEAR:it_itcoo1[].
+        LOOP AT otfdata1 INTO DATA(w_otf11).
+          APPEND w_otf11 TO it_itcoo1.
+          CLEAR w_otf11.
+        ENDLOOP.
+
+
+        CALL FUNCTION 'CONVERT_OTF'
+          EXPORTING
+            format                = 'PDF'
+          IMPORTING
+            bin_filesize          = lv_bin_filesize
+            bin_file              = lv_bin_xstr
+          TABLES
+            otf                   = it_itcoo1 "st_job_output_info-otfdata
+            lines                 = lt_pdf_tab[]
+          EXCEPTIONS
+            err_max_linewidth     = 1
+            err_format            = 2
+            err_conv_not_possible = 3
+            OTHERS                = 4.
+        IF sy-subrc <> 0.
+          MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+                  WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+        ENDIF.
+*Xstring to binary
+        CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+          EXPORTING
+            buffer     = lv_bin_xstr
+          TABLES
+            binary_tab = lt_binary_content.
+        i_pdf_attachment = lt_binary_content.
+
+        filename = |Purchase Order: { iv_ebeln ALPHA = OUT }|.
+*--Process for Email.
+        zcl_email_utility=>send_data(
+          EXPORTING
+            i_mail                     = i_mail[]                " Text Table
+            i_mailcc                   = i_mailcc[]
+            i_text                     = i_text[]                 " Text Table
+            i_pdf_attachment           = i_pdf_attachment                  " GBT: SOLIX as Table Type
+            i_subject                  = i_subject                 " Short description of contents
+            pdf_size                   = lv_bin_filesize "pdf_size                 " Size of Document Content
+            filename                   = filename
+            so10_text_name             = so10_text_name
+        IMPORTING
+          return_message               =  return_message                " Return table
+        ).
+        CLEAR: i_mail[],i_mailcc[],i_text[].
+        READ TABLE return_message INTO DATA(ls_return1) WITH KEY type = 'E'.
+        IF sy-subrc IS INITIAL.
+          ev_return = 'E'.
+        ELSE.
+          ev_return = 'S'.
+        ENDIF.
+      ENDIF.
+    WHEN 'ID00'.
+            SHIFT ls_ekko-lifnr LEFT DELETING LEADING '0'.
+      READ TABLE lv_vendor INTO DATA(ls_vendor1) WITH KEY low = ls_ekko-lifnr.
+      IF sy-subrc NE 0.
+        SELECT SINGLE city1 FROM adrc INTO @DATA(ls_city1) WHERE addrnumber = @ls_ekko-adrnr.
+        IF sy-sysid EQ 'RBQ' OR sy-sysid EQ 'RBD'.
+          IF ls_city1 IS NOT INITIAL.
+            i_subject  = |RGI PO No.: { iv_ebeln ALPHA = OUT } { ls_ekko-name1 } { ls_city1 } - { sy-sysid }.|.
+          ELSE.
+            i_subject  = |RGI PO No.: { iv_ebeln ALPHA = OUT } - { sy-sysid }.|.
+          ENDIF.
+
+        ELSE.
+          IF ls_city1 IS NOT INITIAL.
+            i_subject  = |RGI PO No.: { iv_ebeln ALPHA = OUT } { ls_ekko-name1 } { ls_city1 } |.
+          ELSE.
+            i_subject  = |RGI PO No.: { iv_ebeln ALPHA = OUT } |.
+          ENDIF.
+
+        ENDIF.
+*      i_subject  = |Rebel Purchase order: { iv_ebeln ALPHA = OUT }|.
+        s_text-line = |Dear { ls_ekko-name1 }, |.
+        APPEND s_text TO i_text .
+        s_text-line = ' '. "| |.
+        APPEND s_text TO i_text .
+*      s_text-line = |Referring to your quote and discussion with us, attached is the Purchase Order to be read along with the price annexure (as applicable).|.
+        s_text-line = |Here we send a Purchase Order.|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Purchase Order No: { iv_ebeln ALPHA = OUT }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Date: { ls_ekko-bedat+6(2) }.{ ls_ekko-bedat+4(2) }.{ ls_ekko-bedat+0(4) }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |VENDOR NAME :  { ls_ekko-name1 } { ls_ekko-name2 }|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Please confirm this PO as soon as you receive it.|.
+        APPEND s_text TO i_text .
+        s_text-line = |PO delivery according to the date and quantity stated in the PO.|.
+        APPEND s_text TO i_text .
+        s_text-line = |PO shipments must include a copy of the PO and a Travel Letter stating the PO number.|.
+        APPEND s_text TO i_text .
+        s_text-line = |Exchange of invoices with supporting documents for the billing process can be done after the complete PO quantity is sent.|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |For smooth payment, please complete all documents when exchanging invoices.|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |Exchange of invoices Processing Checklist:|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Original invoice must be submitted by original stamp duties (Stamp),|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Original Tax invoices must be submitted by 2 copies”|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Delivery acceptance must be signed by both parties and presented for Payment Process|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Copy Purchase Order (PO) must be signed by Authorized Procurement Team|.
+        APPEND s_text TO i_text .
+        s_text-line = | Notes for Delivery Schedule:|.
+        APPEND s_text TO i_text .
+        s_text-line = |• For Suppliers who send PO to the Warehouse,|.
+        APPEND s_text TO i_text .
+        s_text-line = |• Operational Receipt of Warehouse Dry/Chill/Frozen :|.
+        APPEND s_text TO i_text .
+        s_text-line = |1. Monday - Friday|.
+        APPEND s_text TO i_text .
+        s_text-line = |   Warehouse Frozen and Chill Inbound Start : 10.00 - 17.00 WIB|.
+        APPEND s_text TO i_text .
+        s_text-line = |   Warehouse Dry Inbound Start : 10.00 - 16.00 WIB|.
+        APPEND s_text TO i_text .
+        s_text-line = |                                             |.
+        APPEND s_text TO i_text .
+        s_text-line = |2. Saturday|.
+        APPEND s_text TO i_text .
+        s_text-line = |   Warehouse Frozen and Chill Inbound Start : 10.00 - 14.00 WIB|.
+        APPEND s_text TO i_text .
+        s_text-line = |   Warehouse Dry Inbound Start : 10.00 - 14.00 WIB|.
+        APPEND s_text TO i_text .
+        s_text-line = |- If the vehicle exceeds operating hours, the overtime fee will be charged to the vendor|.
+        APPEND s_text TO i_text .
+        s_text-line = |- Please bring a PO at the time of delivery of goods|.
+        APPEND s_text TO i_text .
+        IF sy-sysid EQ 'RBQ' OR sy-sysid EQ 'RBD'.
+          s_text-line = |                                             |.
+          APPEND s_text TO i_text .
+          s_text-line = |                                             |.
+          APPEND s_text TO i_text .
+          s_text-line = | ''******'' This mail is for testing purpose kindly ignore the same. ''*****'' |.
+          APPEND s_text TO i_text .
+        ENDIF.
+******** EOC - 17/11/2022 - by EXT_MANJPHAT -
+*******SOC by ext_ameybapa on 17.11.2022 for bulk release issue.
+        DATA : gs_op_info TYPE ssfcrescl.
+*      CALL FUNCTION 'ZZFM_MM_PO_EMAIL_ID'
+*        EXPORTING
+*          iv_ebeln   = iv_ebeln
+*        IMPORTING
+*          gs_op_info = gs_op_info.
+        CALL FUNCTION 'ZZFM_MM_PO_EMAIL_ID'
+          EXPORTING
+            iv_ebeln   = iv_ebeln
+            im_ekko    = im_ekko
+            im_ekpo    = im_ekpo
+            im_eket    = im_eket
+            im_komv    = im_komv
+          IMPORTING
+            gs_op_info = gs_op_info.
+        .
+
+
+        DATA : otfdata2 TYPE tsfotf.
+        otfdata2 = gs_op_info-otfdata.
+*      IMPORT otfdata2 FROM MEMORY ID 'ZM_OTFDATA'.
+        CLEAR:it_itcoo1[].
+        LOOP AT otfdata2 INTO DATA(w_otf2).
+          APPEND w_otf2 TO it_itcoo1.
+          CLEAR w_otf2.
+        ENDLOOP.
+        CALL FUNCTION 'CONVERT_OTF'
+          EXPORTING
+            format                = 'PDF'
+          IMPORTING
+            bin_filesize          = lv_bin_filesize
+            bin_file              = lv_bin_xstr
+          TABLES
+            otf                   = it_itcoo1 "st_job_output_info-otfdata
+            lines                 = lt_pdf_tab[]
+          EXCEPTIONS
+            err_max_linewidth     = 1
+            err_format            = 2
+            err_conv_not_possible = 3
+            OTHERS                = 4.
+        IF sy-subrc <> 0.
+          MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+                  WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+        ENDIF.
+*Xstring to binary
+        CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+          EXPORTING
+            buffer     = lv_bin_xstr
+          TABLES
+            binary_tab = lt_binary_content.
+        i_pdf_attachment = lt_binary_content.
+
+        filename = |Purchase Order: { iv_ebeln ALPHA = OUT }|.
+*--Process for Email.
+        zcl_email_utility=>send_data(
+          EXPORTING
+            i_mail                     = i_mail[]                " Text Table
+            i_mailcc                   = i_mailcc[]
+            i_text                     = i_text[]                 " Text Table
+            i_pdf_attachment           = i_pdf_attachment                  " GBT: SOLIX as Table Type
+            i_subject                  = i_subject                 " Short description of contents
+            pdf_size                   = lv_bin_filesize "pdf_size                 " Size of Document Content
+            filename                   = filename
+            so10_text_name             = so10_text_name
+        IMPORTING
+          return_message               =  return_message                " Return table
+        ).
+        CLEAR: i_mail[],i_mailcc[],i_text[].
+        READ TABLE return_message INTO DATA(ls_return2) WITH KEY type = 'E'.
+        IF sy-subrc IS INITIAL.
+          ev_return = 'E'.
+        ELSE.
+          ev_return = 'S'.
+        ENDIF.
+      ENDIF.
+**********      EOC by ext_ameybapa for bulk release issue.
+  ENDCASE.
+
+*   SELECT SINGLE * FROM nast INTO @DATA(ls_nast1) WHERE objky EQ @iv_ebeln.
+*      IF sy-subrc IS INITIAL.
+*        SELECT SINGLE * FROM tnapr INTO @DATA(ls_tnapr1) WHERE kschl EQ @ls_nast1-kschl AND nacha = 1.
+*        IF sy-subrc IS INITIAL.
+*          DATA: ent_retco1  TYPE i, ent_screen1 TYPE c.
+*          DATA lv_prog1 TYPE char10 VALUE 'PO_EMAIL'.
+*          WAIT UP TO 1 SECONDS.
+*          FREE MEMORY ID 'ZM_NAST'.
+*          EXPORT ls_nast1 TO MEMORY ID 'ZM_NAST'.
+*          EXPORT lv_prog1 TO MEMORY ID 'ZM_PROG'.
+*
+*          PERFORM entry_neu IN PROGRAM (ls_tnapr1-pgnam)  USING ent_retco1 ent_screen1 IF FOUND.
+*
+*        ENDIF.
+*      ENDIF.
+ENDFUNCTION.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

@@ -1,0 +1,85 @@
+**************************************************************************
+*   Class attributes.                                                    *
+**************************************************************************
+Instantiation: Public
+Message class:
+State: Implemented
+Final Indicator: X
+R/3 Release: 756
+
+**************************************************************************
+*   Public section of class.                                             *
+**************************************************************************
+class ZZCL_EMAIL_TEXT definition
+  public
+  final
+  create public .
+
+public section.
+
+  class-methods SET_PR_APPROVER_TEXT
+    importing
+      WORKITEM_ID type SWR_STRUCT-WORKITEMID
+      USERNAME type SYUNAME
+      P_WI_ID type SWR_STRUCT-WORKITEMID optional
+    changing
+      L_TEXT_PROLOG type STRING .
+  class-methods SET_PR_INITIATOR_TEXT
+    importing
+      WORKITEM_ID type SWR_STRUCT-WORKITEMID optional
+      USERNAME type SYUNAME optional
+      P_WI_ID type SWR_STRUCT-WORKITEMID optional
+    changing
+      L_TEXT_PROLOG type STRING .
+  class-methods GET_USERNAME_TEXT
+    importing
+      USERNAME type SYUNAME
+    returning
+      value(USERNAME_TEXT) type TEXT80 .
+  class-methods SET_PO_APPROVER_TEXT
+    importing
+      WORKITEM_ID type SWR_STRUCT-WORKITEMID
+      USERNAME type SYUNAME
+      P_WI_ID type SWR_STRUCT-WORKITEMID optional
+    changing
+      L_TEXT_PROLOG type STRING .
+  class-methods SET_PO_INITIATOR_TEXT
+    importing
+      WORKITEM_ID type SWR_STRUCT-WORKITEMID
+      USERNAME type SYUNAME
+      P_WI_ID type SWR_STRUCT-WORKITEMID optional
+    changing
+      L_TEXT_PROLOG type STRING .
+
+**************************************************************************
+*   Private section of class.                                            *
+**************************************************************************
+private section.
+
+  class-methods GET_APPROVAL_COMMENTS
+    importing
+      WORKITEM_ID type SWR_STRUCT-WORKITEMID optional
+      LS_PURCHASE_ORDER type EKKO optional
+    exporting
+      APPROVAL_COMMENTS type STRING
+      LEVEL type I .
+  class-methods CONVERT_TABLE_TO_STRING
+    importing
+      LINE_TABLE type SWFTLISTI1
+    returning
+      value(COMMENTS) type STRING .
+
+**************************************************************************
+*   Protected section of class.                                          *
+**************************************************************************
+protected section.
+
+**************************************************************************
+*   Types section of class.                                              *
+**************************************************************************
+*"* dummy include to reduce generation dependencies between
+*"* class ZZCL_EMAIL_TEXT and it's users.
+*"* touched if any type reference has been changed
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

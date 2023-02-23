@@ -1,0 +1,858 @@
+FUNCTION zzfm_mm_po_email_uae.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(IV_EBELN) TYPE  EBELN
+*"     VALUE(IM_EKKO) TYPE  EKKO OPTIONAL
+*"     VALUE(IM_EKPO) TYPE  MMPR_UEKPO OPTIONAL
+*"     VALUE(IM_EKET) TYPE  MMPR_UEKET OPTIONAL
+*"     VALUE(IM_KOMV) TYPE  KOMV_TAB OPTIONAL
+*"  EXPORTING
+*"     REFERENCE(GS_OP_INFO) TYPE  SSFCRESCL
+*"----------------------------------------------------------------------
+*&-----------------------------------------------------------------   *
+*& RICEFW Tech. Name :
+*& Tech Constultant  : Amey Bapat ext_ameybapa, Karishma Rokade ext_kariroka.
+*& Func. Consultant  : Pranay Dalvi / Nikhil Shimpi
+*& Created Date      :
+*& Module            : MM
+*& RICEFW Name       :  function module with logic of calling uae po Smartform
+*& Transaction Code  : NA
+*& Description       : For calling smartform for with or without release strategy of uae po.
+*&--------------------------------------------------------------------*
+* Modification History   - ID/Date(DD-MM-YYYY)/TR/ID/Change Text      *
+*RBDK902099   ABAP:WR:MM:vendor email trigger for non release strategy-KR             24.11.2022  12:25:00  EXT_KARIROKA
+*RBDK902091   TOC:ABAP:MM- For IDN PO form and PO Attachment issue  - SC              21.11.2022  14:32:27  SNEHCHOU
+*RBDK902079   ABAP:WR:MM: Add Multiple Email ID for PO to Vendor - SC     RBD_P00001  21.11.2022  11:43:53  SNEHCHOU
+*RBDK902077   KPMG:ABAP:WR:UAE form resolution v3                         RBD_P00001  19.11.2022  16:28:10  EXT_AMEYBAPA
+*RBDK902052   KPMG:ABAP:WR:Bulk issue resolution V1                       RBD_P00001  19.11.2022  10:44:33  EXT_AMEYBAPA
+*---------------------------------------------------------------------*
+*TABLES : t001, adrc, ekko, lfa1, but020, adr6,
+*         dfkkbptaxnum, user_addr, usr21,
+*         j_1imocomp, t001w,  j_1bt001wv, j_1bbranch,
+*         t052, ekpo, marc, prcd_elements, konp.
+
+  DATA: gt_po      TYPE TABLE OF zst_po_form_uae,
+        gs_po      TYPE zst_po_form_uae,
+        gt_tab     TYPE TABLE OF zst_po_form_uae_ss,
+        gt_tab1    TYPE TABLE OF zst_po_form_uae_ss,
+        gs_tab     TYPE zst_po_form_uae_ss,
+        gt_mwdat   TYPE TABLE OF rtax1u15,
+        gs_ekko    TYPE ekko,
+        gs_words   TYPE spell,
+        gv_name    LIKE thead-tdname,
+        gv_ebeln   TYPE ebeln,
+        gv_amt     TYPE p DECIMALS 2,
+        gv_bill    TYPE c,
+        gv_delv    TYPE c,
+        gv_fm_name TYPE rs38l_fnam,
+        gv_bukrs   TYPE bkpf-bukrs,
+        gv_mwskz   TYPE bseg-mwskz,
+        gv_waers   TYPE bkpf-waers,
+        gv_wrbtr   TYPE bseg-wrbtr.
+
+  CONSTANTS: c_spras(1) TYPE c VALUE 'E',
+             c_land1(2) TYPE c VALUE 'AE'.
+
+
+  gv_ebeln = iv_ebeln.
+*************************** Fetching Company Address**********************************
+
+  SELECT SINGLE ebeln, bukrs, lifnr, frgke, bedat, ernam, zterm, knumv, inco1, waers FROM ekko INTO CORRESPONDING FIELDS OF @gs_ekko WHERE ebeln = @gv_ebeln.
+  IF sy-subrc = 0.
+
+***   ""do nothing
+  ELSE.
+*****  SOC-  added by ext_kariroka for non release strategy on 22.11.2022.
+    gs_ekko-ebeln = im_ekko-ebeln.
+    gs_ekko-bukrs = im_ekko-bukrs.
+    gs_ekko-lifnr = im_ekko-lifnr.
+    gs_ekko-frgke = im_ekko-frgke.
+    gs_ekko-bedat = im_ekko-bedat.
+    gs_ekko-ernam = im_ekko-ernam.
+    gs_ekko-zterm = im_ekko-zterm.
+    gs_ekko-knumv = im_ekko-knumv.
+    gs_ekko-inco1 = im_ekko-inco1.
+    gs_ekko-waers = im_ekko-waers.
+*      gs_ekko-ekgrp = im_ekko-ekgrp.
+*      gs_ekko-bsart = im_ekko-bsart.
+*****EOC by ext_kariroka for non release strategy.
+
+  ENDIF.
+  IF gs_ekko IS NOT INITIAL.
+    SELECT SINGLE bezei FROM tinct INTO @gs_po-inco WHERE inco1 = @gs_ekko-inco1 AND spras = @c_spras .
+
+
+    SELECT SINGLE bukrs, butxt, land1, spras, waers, adrnr,stceg FROM t001 INTO @DATA(wa_t001) WHERE bukrs = @gs_ekko-bukrs.
+    IF wa_t001 IS NOT INITIAL.
+      SELECT SINGLE addrnumber, street, str_suppl1, str_suppl2, str_suppl3, location, city1, region, post_code1, country, name1
+        FROM adrc INTO @DATA(wa_adrc) WHERE addrnumber = @wa_t001-adrnr. "#EC CI_NOORDER
+      IF sy-subrc EQ 0.
+        SELECT SINGLE spras, land1, bland, bezei FROM t005u INTO @DATA(ls_t005) WHERE bland = @wa_adrc-region AND spras = @c_spras AND land1 = @c_land1.
+        SELECT SINGLE spras, land1, landx FROM t005t INTO @DATA(ls_t005t) WHERE land1 = @wa_adrc-country AND spras = @c_spras." AND LAND1 = @LV_LAND1.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+  gs_po-comp_name = wa_adrc-name1.
+*** BOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+  gs_po-comp_address = | { wa_adrc-str_suppl1 } { wa_adrc-str_suppl2 } { wa_adrc-street } { wa_adrc-str_suppl3 } { wa_adrc-location } { wa_adrc-city1 } |.
+*** EOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+  gs_po-comp_address1 = | { ls_t005-bezei } { ls_t005t-landx } |.
+  gs_po-status = gs_ekko-frgke.
+  gs_po-vat = wa_t001-stceg. ""VAT
+  gs_po-vendor_code = gs_ekko-lifnr.
+
+  SELECT SINGLE lifnr, name1, telf1,  stceg FROM lfa1 INTO @DATA(ls_lfa1)
+   WHERE lifnr = @gs_ekko-lifnr.
+  IF sy-subrc = 0.
+    gs_po-vendor_add  = ls_lfa1-name1.
+    gs_po-vendor_vat = ls_lfa1-stceg.
+  ENDIF.
+
+  SELECT SINGLE addrnumber, partner FROM but020 INTO @DATA(ls_but)
+  WHERE partner = @gs_ekko-lifnr.                       "#EC CI_NOORDER
+  IF sy-subrc = 0.
+    SELECT SINGLE addrnumber, street, str_suppl1, str_suppl2, str_suppl3, location, city1, region, post_code1, country
+      FROM adrc INTO @DATA(wa_adrc1) WHERE addrnumber =  @ls_but-addrnumber. "#EC CI_NOORDER
+*    IF sy-subrc = 0.
+    SELECT SINGLE spras, land1, bland, bezei FROM t005u INTO @DATA(ls_vendor)
+  WHERE bland = @wa_adrc1-region AND spras = @c_spras AND land1 = @c_land1.
+*      IF sy-subrc = 0.
+    SELECT SINGLE spras, land1, landx FROM t005t INTO @DATA(ls_vendor1)
+   WHERE land1 = @wa_adrc1-country AND spras = @c_spras AND land1 = @c_land1.
+*        IF sy-subrc = 0.
+*** BOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+    gs_po-vendor_add1 = | { wa_adrc1-str_suppl1 } { wa_adrc1-str_suppl2 } { wa_adrc1-street } { wa_adrc1-str_suppl3 } { wa_adrc1-location } { wa_adrc1-city1 } | .
+*** EOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+
+*  gs_po-vendor_add2 = | { ls_vendor-bezei } { ls_vendor1-landx } { wa_adrc1-post_code1 } | .
+    gs_po-vendor_add2 = ls_vendor-bezei.
+    gs_po-vendor_tel = ls_lfa1-telf1.
+
+    SELECT SINGLE addrnumber, persnumber, smtp_addr FROM adr6 INTO @DATA(ls_adr6)
+   WHERE addrnumber = @wa_adrc1-addrnumber.             "#EC CI_NOORDER
+    gs_po-vendor_email = ls_adr6-smtp_addr.
+*        ENDIF.
+*      ENDIF.
+*    ENDIF.
+  ENDIF.
+
+
+**********  Information tab *************
+
+  gs_po-po_no = gs_ekko-ebeln.
+  gs_po-po_date = gs_ekko-bedat.
+
+
+  SELECT SINGLE bname, name_first FROM user_addr INTO @DATA(ls_user)
+  WHERE bname = @gs_ekko-ernam.                         "#EC CI_NOORDER
+  IF sy-subrc = 0.
+    gs_po-cont_person = ls_user-name_first.
+  ENDIF.
+
+  SELECT SINGLE bname, persnumber, addrnumber FROM usr21 INTO @DATA(ls_usr)
+   WHERE bname = @gs_ekko-ernam.
+  IF sy-subrc = 0.
+    gs_po-person_no = ls_usr-persnumber.
+  ENDIF.
+  SELECT SINGLE persnumber, smtp_addr FROM adr6 INTO @DATA(ls_adr1)
+   WHERE persnumber = @ls_usr-persnumber.               "#EC CI_NOORDER
+  IF sy-subrc = 0.
+    gs_po-email = ls_adr1-smtp_addr.
+  ENDIF.
+  SELECT SINGLE spras, vtext FROM tvzbt INTO @DATA(ls_term) WHERE zterm = @gs_ekko-zterm AND spras = @c_spras.
+  IF sy-subrc = 0.
+    gs_po-zterm = ls_term-vtext.
+  ENDIF.
+
+************ Bill to ship Address ***********
+
+
+  DATA: lv_index TYPE sy-tabix.
+  SELECT ebeln, ebelp, werks, adrnr, banfn, matnr, mwskz, txz01, menge, meins, netwr,mfrpn,loekz FROM ekpo INTO TABLE @DATA(lt_ekpo)
+    WHERE ebeln = @gv_ebeln AND loekz NE 'L'. """"added not to fetch deleted records by ext_kariroka on 23.11.2022
+  IF sy-subrc = 0.
+********* SOC by ext_kariroka -RBDK902094 for non release strategy on 22.11.2022.
+******SOC by ext_kariroka for email trigger change in me22n as to fetch data from table and update with existing im_ekpo values
+    IF im_ekpo IS NOT INITIAL.
+      DATA: gs_ekpo2 LIKE LINE OF lt_ekpo.
+*****      if modifying any line item should be seen in PO form
+      LOOP AT lt_ekpo INTO DATA(ls_ekpo1).
+        lv_index = sy-tabix.
+        READ TABLE im_ekpo[] INTO DATA(im_ekpo1) WITH KEY ebelp = ls_ekpo1-ebelp.
+        IF sy-subrc = 0.
+          MOVE-CORRESPONDING im_ekpo1 TO gs_ekpo2.
+          MODIFY lt_ekpo FROM gs_ekpo2 INDEX lv_index .
+        ENDIF.
+      ENDLOOP.
+***** for deleting line item should be seen in po form
+      DELETE lt_ekpo WHERE loekz EQ 'L'.
+
+******if adding any line item in ekpo should be shown in po form
+      LOOP AT im_ekpo INTO DATA(gs1_ekpo1) WHERE loekz NE 'L' .
+        READ TABLE lt_ekpo INTO ls_ekpo1 WITH KEY ebeln = gs1_ekpo1-ebeln ebelp = gs1_ekpo1-ebelp.
+        IF sy-subrc NE 0.
+          MOVE-CORRESPONDING gs1_ekpo1 TO gs_ekpo2.
+          APPEND gs_ekpo2 TO lt_ekpo.
+          CLEAR: gs_ekpo2, gs1_ekpo1.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+******EOC by ext_kariroka for email trigger change in me22n as to fetch data from table and update with existing im_ekpo values
+
+  ELSE.
+    MOVE-CORRESPONDING im_ekpo[] TO lt_ekpo[].
+  ENDIF.
+  IF lt_ekpo IS NOT INITIAL.
+******** EOC by ext_kariroka for non release strategy on 22.11.2022
+    DATA(wa_ekpo) = lt_ekpo[ ebeln = gv_ebeln ].
+    IF wa_ekpo-werks IS NOT INITIAL.
+
+      SELECT SINGLE werks, adrnr, name1 FROM t001w INTO @DATA(gs_t001w)
+        WHERE werks = @wa_ekpo-werks.
+      IF gs_t001w IS NOT INITIAL.
+        SELECT SINGLE addrnumber, str_suppl1, str_suppl2, str_suppl3, street, location, city1, region, country
+          FROM adrc INTO @DATA(gs_adrc2) WHERE addrnumber  = @gs_t001w-adrnr. "#EC CI_NOORDER
+        IF sy-subrc EQ 0.
+          SELECT SINGLE spras, land1, bland, bezei FROM t005u INTO @DATA(gs_data)
+            WHERE bland = @gs_adrc2-region AND spras = @c_spras AND land1 = @c_land1.
+
+          SELECT SINGLE spras, land1, landx FROM T005t INTO @DATA(gs_data1)
+            WHERE land1 = @gs_adrc2-country  AND spras = @c_spras AND land1 =  @c_land1.
+        ENDIF.
+      ENDIF.
+
+      gs_po-bill_name = gs_t001w-name1.
+
+*** BOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+
+      gs_po-bill_add = | { gs_adrc2-str_suppl1 } { gs_adrc2-str_suppl2 } { gs_adrc2-street }{ gs_adrc2-str_suppl3 } |  .
+
+*** EOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+
+      gs_po-bill_add1 = | { gs_adrc2-location } { gs_adrc2-city1 } { gs_data-bezei } { gs_data1-landx } |  .
+
+      gs_po-bill_add2 = gs_data-bezei.
+
+    ENDIF.
+
+    SELECT  adrnr, name1, werks FROM t001w
+      FOR ALL ENTRIES IN @lt_ekpo
+       WHERE werks = @lt_ekpo-werks
+       INTO TABLE @DATA(git_t001w).
+
+    SELECT banfn, ernam FROM eban INTO TABLE @DATA(lt_eban)
+      FOR ALL ENTRIES IN @lt_ekpo WHERE
+       banfn = @lt_ekpo-banfn.                     "#EC CI_NO_TRANSFORM
+
+    SELECT  matnr, steuc FROM marc INTO TABLE @DATA(lt_marc)
+      FOR ALL ENTRIES IN @lt_ekpo
+      WHERE matnr = @lt_ekpo-matnr AND werks = @lt_ekpo-werks. "#EC CI_NO_TRANSFORM
+
+  ENDIF.
+
+  IF lt_eban IS NOT INITIAL.
+    SELECT  bname, name_first FROM user_addr
+      INTO TABLE @DATA(lt_user1)
+      FOR ALL ENTRIES IN @lt_eban
+      WHERE bname = @lt_eban-ernam.                "#EC CI_NO_TRANSFORM
+  ENDIF.
+
+
+  IF lt_user1 IS NOT INITIAL.
+    SELECT  bname, persnumber FROM usr21 INTO TABLE @DATA(lt_usr21)
+      FOR ALL ENTRIES IN @lt_user1
+      WHERE bname = @lt_user1-bname.               "#EC CI_NO_TRANSFORM
+  ENDIF.
+
+  IF lt_usr21 IS NOT INITIAL.
+    SELECT  persnumber, telnr_long FROM adr2 INTO TABLE @DATA(lt_adr2)
+      FOR ALL ENTRIES IN @lt_usr21
+      WHERE persnumber = @lt_usr21-persnumber.     "#EC CI_NO_TRANSFORM
+  ENDIF.
+
+  gs_po-po_user = VALUE #( lt_user1[ 1 ]-name_first OPTIONAL ).
+  gs_po-po_contact = VALUE #( lt_adr2[ 1 ]-telnr_long OPTIONAL ).
+
+  IF git_t001w IS NOT INITIAL.
+    SELECT region, country, addrnumber, str_suppl1, str_suppl2, street, str_suppl3, location, city1
+     FROM adrc INTO TABLE @DATA(lt_adrc2)
+     FOR ALL ENTRIES IN @git_t001w
+     WHERE addrnumber  = @git_t001w-adrnr.         "#EC CI_NO_TRANSFORM
+  ENDIF.
+
+  IF lt_adrc2 IS NOT INITIAL.
+    SELECT spras, land1, bland, bezei FROM t005u INTO TABLE @DATA(git_data2)
+     FOR ALL ENTRIES IN @lt_adrc2
+     WHERE bland = @lt_adrc2-region AND spras = @c_spras AND land1 = @c_land1.
+
+    SELECT spras, land1, landx FROM t005t INTO TABLE @DATA(git_data3)
+      FOR ALL ENTRIES IN @lt_adrc2
+      WHERE land1 = @lt_adrc2-country  AND spras = @c_spras AND land1 = @c_land1.
+
+  ENDIF.
+
+  IF gs_ekko IS NOT INITIAL.
+    SELECT  knumv, kposn, kwert, kbetr, kschl FROM prcd_elements INTO TABLE @DATA(lt_elements)
+       WHERE knumv = @gs_ekko-knumv AND kschl = 'JEXS'.
+  ENDIF.
+
+
+***************** Line item ************
+  DATA: lv_total  TYPE p LENGTH 13 DECIMALS 3,
+        lv_var1   TYPE p LENGTH 13 DECIMALS 3,
+        lv_value  TYPE p LENGTH 13 DECIMALS 3,
+        lv_value1 TYPE p LENGTH 13 DECIMALS 3,
+*** BOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+        lv_temp1  TYPE p LENGTH 13 DECIMALS 2.
+*** EOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+************************  added by amey
+  SORT lt_ekpo BY ebeln ebelp.
+******************************  end.
+  LOOP AT lt_ekpo INTO DATA(ls_ekpo).
+
+    """"""""""""""""""""""""""""""""""""new logic for item desc""""""""""""""""""""""""""
+*    IF ls_ekpo-mfrpn IS NOT INITIAL.
+*      SELECT SINGLE maktx FROM makt INTO @DATA(lv_desc) WHERE matnr = @ls_ekpo-matnr. "#EC CI_NOORDER
+*      gs_tab-matnr = lv_desc.
+*    ELSE.
+*      gs_tab-matnr = ls_ekpo-txz01.
+*    ENDIF.
+
+*** BOC by EXT_MANJPHAT-03/09/2022 - RBDK901158
+
+    DATA: lv_name1 TYPE thead-tdname,
+          lt_tab1  TYPE STANDARD TABLE OF tline,
+          wa_tab1  TYPE tline.
+    lv_name1 = ls_ekpo-matnr.
+
+    CALL FUNCTION 'READ_TEXT'
+      EXPORTING
+        client                  = sy-mandt
+        id                      = 'GRUN'
+        language                = 'E'
+        name                    = lv_name1
+        object                  = 'MATERIAL'
+*       ARCHIVE_HANDLE          = 0
+*       LOCAL_CAT               = ' '
+* IMPORTING
+*       HEADER                  =
+*       OLD_LINE_COUNTER        =
+      TABLES
+        lines                   = lt_tab1
+      EXCEPTIONS
+        id                      = 1
+        language                = 2
+        name                    = 3
+        not_found               = 4
+        object                  = 5
+        reference_check         = 6
+        wrong_access_to_archive = 7
+        OTHERS                  = 8.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+    LOOP AT lt_tab1 INTO wa_tab1.
+*      gs_tab-matnr = wa_tab1-tdline.
+*****************************      soc by amey 30.11.2022
+      CONCATENATE gs_tab-matnr wa_tab1-tdline INTO gs_tab-matnr SEPARATED BY space.
+
+      CONDENSE gs_tab-matnr.
+      SHIFT gs_tab-matnr LEFT DELETING LEADING space.
+      REPLACE ALL OCCURRENCES  OF '<(>&<)>' IN gs_tab-matnr WITH '&'.
+*****************************      eoc by amey.
+
+    ENDLOOP.
+*** EOC by EXT_MANJPHAT-03/09/2022 - RBDK901158
+    gs_tab-item_no =  ls_ekpo-ebelp.
+
+
+
+    IF  ls_ekpo-werks IS NOT INITIAL.
+      DATA(ls_t001w) = VALUE #( git_t001w[ werks = ls_ekpo-werks ] OPTIONAL ).
+      gs_tab-bill_name = VALUE #( git_t001w[ werks = ls_ekpo-werks ]-name1 OPTIONAL ).
+      DATA(ls_adrc2) = VALUE #( lt_adrc2[ addrnumber = ls_t001w-adrnr ] OPTIONAL ).
+*** BOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+      gs_tab-bill_add  = | { ls_adrc2-str_suppl1 }{ ls_adrc2-str_suppl2 }{ ls_adrc2-street }{ ls_adrc2-str_suppl3 }| .
+*** EOC by EXT_MANJPHAT-21/09/2022 - RBDK901455
+      DATA(gs_data2) = VALUE #( git_data2[ bland = ls_adrc2-region ] OPTIONAL ).
+      DATA(gs_data3) = VALUE #( git_data3[ land1 = ls_adrc2-country ] OPTIONAL ).
+      gs_tab-bill_add1 = | { ls_adrc2-location }| && |{ ls_adrc2-city1 } | && | { gs_data2-bezei } | && |{ gs_data3-landx }| .
+      gs_tab-bill_place = gs_data2-bezei.
+      gs_tab-bill_plant = ls_t001w-werks.
+    ENDIF.
+    gs_tab-order_qty = ls_ekpo-menge.
+*** BOC by EXT_MANJPHAT-08/09/2022 - RBDK901237
+
+*****soc by ext_kariroka for me21n here prcd elements is blank
+    IF im_ekko IS NOT INITIAL AND im_komv[] IS NOT INITIAL.   """for non release strategy
+*      SELECT  SINGLE knumv, kposn, kpein, kbetr  FROM prcd_elements INTO @DATA(ls_prcd2)
+*      WHERE knumv = @gs_ekko-knumv AND kposn = @ls_ekpo-ebelp AND kschl IN ('PBXX') .
+**********************************      soc by amey 30.11.2022
+      SELECT  SINGLE
+        knumv,
+        kposn,
+        kpein,
+        kbetr  FROM prcd_elements                       "#EC CI_NOORDER
+        WHERE knumv = @gs_ekko-knumv
+        AND kposn = @ls_ekpo-ebelp
+        AND kschl IN ('PBXX') AND kinak IS INITIAL INTO @DATA(ls_prcd2).
+
+**************************************** eoc by amey.
+      IF sy-subrc EQ 0.
+        IF im_komv IS NOT INITIAL.  """in me22n change mode values need to be updated
+          READ TABLE im_komv INTO DATA(wa_komv) WITH KEY kposn = ls_ekpo-ebelp kschl = 'PBXX' kinak = ' ' .
+          IF sy-subrc = 0.
+            lv_value = ( wa_komv-kbetr / wa_komv-kpein ).
+          ENDIF.
+        ELSE.  """no change in me22n
+          lv_value = ( ls_prcd2-kbetr / ls_prcd2-kpein ).
+        ENDIF.
+      ELSE.  """ in me21n mode
+        READ TABLE im_komv INTO DATA(lw_komv) WITH KEY kposn = ls_ekpo-ebelp kschl = 'PBXX'  kinak = ' '.
+        IF sy-subrc = 0.
+          lv_value = ( lw_komv-kbetr / lw_komv-kpein ).
+        ENDIF.
+
+      ENDIF.
+*      SELECT SINGLE  knumv, kposn,kpein, kbetr FROM prcd_elements INTO  @DATA(ls_prcd3)
+*      WHERE knumv = @gs_ekko-knumv AND kposn = @ls_ekpo-ebelp AND kschl IN ('ZB01') .
+*************************************      soc by amey 30.11.2022
+      SELECT SINGLE  knumv,
+                     kposn,
+                     kpein,
+                     kbetr FROM prcd_elements           "#EC CI_NOORDER
+                     WHERE knumv = @gs_ekko-knumv
+                     AND kposn = @ls_ekpo-ebelp AND kschl IN ('ZB01') AND kinak IS INITIAL INTO  @DATA(ls_prcd3).
+****************************************   eoc by amey.
+      IF sy-subrc = 0.  """ for me22n
+        IF im_komv IS NOT INITIAL.  """ current values need to be updated
+          READ TABLE im_komv INTO wa_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'ZB01' kinak = ' ' .
+          IF sy-subrc = 0.
+            lv_value1 = ( wa_komv-kbetr / wa_komv-kpein ).
+          ENDIF.
+        ELSE.
+          lv_value1 = ( ls_prcd3-kbetr / ls_prcd3-kpein ).
+
+*            gs_tab-rate = lv_value + lv_value1.
+        ENDIF.
+        gs_tab-rate = lv_value + lv_value1.
+      ELSE.  """ for me21n
+        CLEAR: lw_komv.
+        READ TABLE im_komv INTO lw_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'ZB01' kinak = ' '.
+        IF sy-subrc = 0.
+*          READ TABLE im_ekpo INTO data(lw_ekpo1) WITH KEY ebelp = lw_komv-kposn.
+
+          lv_value1 = ( lw_komv-kbetr / lw_komv-kpein ).
+        ENDIF.
+        gs_tab-rate = lv_value + lv_value1.
+      ENDIF.
+*** EOC by EXT_MANJPHAT-08/09/2022 - RBDK901237
+      SELECT knumv, kposn, SUM( kwert ) AS discount FROM prcd_elements INTO TABLE @DATA(lt_prcd1)
+        WHERE knumv = @gs_ekko-knumv AND kposn = @ls_ekpo-ebelp AND kschl IN ('RA00','RB00','RC00') GROUP BY knumv, kposn.
+
+      IF sy-subrc = 0.
+
+        IF im_komv[] IS NOT INITIAL.  """for me22n current values need to be updated
+          DATA : gv_kwert TYPE kwert.
+          CLEAR: lw_komv.
+          READ TABLE im_komv INTO lw_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'RA00'.
+          IF sy-subrc EQ 0.
+            DATA(gv_dis1) = lw_komv-kwert.
+          ENDIF.
+          READ TABLE im_komv INTO lw_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'RB00'.
+          IF sy-subrc EQ 0.
+            DATA(gv_dis2) = lw_komv-kwert.
+          ENDIF.
+          READ TABLE im_komv INTO lw_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'RC00'.
+          IF sy-subrc EQ 0.
+            DATA(gv_dis3) = lw_komv-kwert.
+          ENDIF.
+          gv_kwert = gv_dis1 + gv_dis2 + gv_dis3.
+          gs_tab-diss_amt = gv_kwert.
+
+          gs_tab-diss_amt =  gs_tab-diss_amt * -1.
+
+          gs_tab-tax_amt = ( gs_tab-order_qty * gs_tab-rate ) + gv_kwert.
+
+
+          gv_bukrs = gs_ekko-bukrs.
+          gv_mwskz = ls_ekpo-mwskz.
+          gv_waers = gs_ekko-waers.
+          gv_wrbtr = gs_tab-tax_amt.
+
+        ELSE.   """ amey code will run
+          gs_tab-diss_amt = VALUE #( lt_prcd1[ knumv = gs_ekko-knumv ]-discount OPTIONAL ).
+
+
+          gs_tab-tax_amt = ( gs_tab-order_qty * gs_tab-rate ) + gs_tab-diss_amt.
+
+
+          gv_bukrs = gs_ekko-bukrs.
+          gv_mwskz = ls_ekpo-mwskz.
+          gv_waers = gs_ekko-waers.
+          gv_wrbtr = gs_tab-tax_amt.
+
+        ENDIF.
+      ELSE.  """for me21n code for release strategy
+
+        CLEAR: lw_komv.
+        READ TABLE im_komv INTO lw_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'RA00'.
+        IF sy-subrc EQ 0.
+          gv_dis1 = lw_komv-kwert.
+        ENDIF.
+        READ TABLE im_komv INTO lw_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'RB00'.
+        IF sy-subrc EQ 0.
+          gv_dis2 = lw_komv-kwert.
+        ENDIF.
+        READ TABLE im_komv INTO lw_komv WITH KEY kposn = ls_ekpo-ebelp kschl = 'RC00'.
+        IF sy-subrc EQ 0.
+          gv_dis3 = lw_komv-kwert.
+        ENDIF.
+        gv_kwert = gv_dis1 + gv_dis2 + gv_dis3.
+*        LOOP AT im_komv INTO lw_komv WHERE kposn = ls_ekpo-ebelp AND kschl EQ 'RA00'OR kschl EQ 'RB00' OR kschl EQ 'RC00'.
+**          READ TABLE im_ekpo INTO DATA(lw_ekpo1) WITH KEY ebelp = lw_komv-kposn.
+**          IF sy-subrc = 0.
+*            gv_kwert = gv_kwert + lw_komv-kwert.
+**          ENDIF.
+*        ENDLOOP.
+*
+        gs_tab-diss_amt = gv_kwert.
+
+        gs_tab-diss_amt =  gs_tab-diss_amt * -1.
+
+        gs_tab-tax_amt = ( gs_tab-order_qty * gs_tab-rate ) + gv_kwert.
+
+
+        gv_bukrs = gs_ekko-bukrs.
+        gv_mwskz = ls_ekpo-mwskz.
+        gv_waers = gs_ekko-waers.
+        gv_wrbtr = gs_tab-tax_amt.
+      ENDIF.
+
+
+
+    ELSE.  """ for release strategy
+***      amey cide will run
+*****eoc by ext_kariroka for me21n issue
+      SELECT SINGLE knumv, kposn, kpein, kbetr  FROM prcd_elements
+  WHERE knumv = @gs_ekko-knumv AND kposn = @ls_ekpo-ebelp AND kschl IN ('PBXX') AND kinak is INITIAL
+        INTO @ls_prcd2 .
+      lv_value = ( ls_prcd2-kbetr / ls_prcd2-kpein ).
+
+      SELECT SINGLE  knumv, kposn,kpein, kbetr FROM prcd_elements
+  WHERE knumv = @gs_ekko-knumv AND kposn = @ls_ekpo-ebelp AND kschl IN ('ZB01') AND kinak is INITIAL
+        INTO @ls_prcd3.
+
+      lv_value1 = ( ls_prcd3-kbetr / ls_prcd3-kpein ).
+
+      gs_tab-rate = lv_value + lv_value1.
+
+*** EOC by EXT_MANJPHAT-08/09/2022 - RBDK901237
+      SELECT knumv, kposn, SUM( kwert ) AS discount FROM prcd_elements INTO TABLE @lt_prcd1
+        WHERE knumv = @gs_ekko-knumv AND kposn = @ls_ekpo-ebelp AND kschl IN ('RA00','RB00','RC00') GROUP BY knumv, kposn.
+
+
+      gs_tab-diss_amt = VALUE #( lt_prcd1[ knumv = gs_ekko-knumv ]-discount OPTIONAL ).
+
+
+      gs_tab-tax_amt = ( gs_tab-order_qty * gs_tab-rate ) + gs_tab-diss_amt.
+
+
+      gv_bukrs = gs_ekko-bukrs.
+      gv_mwskz = ls_ekpo-mwskz.
+      gv_waers = gs_ekko-waers.
+      gv_wrbtr = gs_tab-tax_amt.
+
+      """""""""""""""""""""BAPI FOR CALCULATING VAT AMOUNT"""""""""""""""""""""""""""""""""""""
+    ENDIF.
+    CALL FUNCTION 'CALCULATE_TAX_FROM_NET_AMOUNT'
+      EXPORTING
+        i_bukrs           = gv_bukrs
+        i_mwskz           = gv_mwskz
+*       I_TXJCD           = ' '
+        i_waers           = gv_waers
+        i_wrbtr           = gv_wrbtr
+*       I_ZBD1P           = 0
+*       I_PRSDT           =
+*       I_TAX_RELEVANT_DATES       =
+*       I_PROTOKOLL       =
+*       I_TAXPS           =
+*       I_ACCNT_EXT       =
+*       I_ACCDATA         =
+*       I_PRICING_REFRESH_TX       = ' '
+*       I_TAX_COUNTRY     =
+*     IMPORTING
+*       E_FWNAV           =
+*       E_FWNVV           =
+*       E_FWSTE           =
+*       E_FWAST           =
+      TABLES
+        t_mwdat           = gt_mwdat
+      EXCEPTIONS
+        bukrs_not_found   = 1
+        country_not_found = 2
+        mwskz_not_defined = 3
+        mwskz_not_valid   = 4
+        ktosl_not_found   = 5
+        kalsm_not_found   = 6
+        parameter_error   = 7
+        knumh_not_found   = 8
+        kschl_not_found   = 9
+        unknown_error     = 10
+        account_not_found = 11
+        txjcd_not_valid   = 12
+        tdt_error         = 13
+        txa_error         = 14
+        OTHERS            = 15.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+    .
+    """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+    gs_tab-vat_rate = VALUE #( gt_mwdat[ kschl = 'MWVS' ]-msatz OPTIONAL ).
+    IF gs_tab-vat_rate IS INITIAL.
+      gs_tab-vat_rate = VALUE #( gt_mwdat[ kschl = 'MWVN' ]-msatz OPTIONAL ).
+    ENDIF.
+    IF gs_tab-vat_rate IS INITIAL.
+      gs_tab-vat_rate = VALUE #( gt_mwdat[ kschl = 'MWVZ' ]-msatz OPTIONAL ).
+    ENDIF.
+
+
+    gs_tab-vat_amount = VALUE #( gt_mwdat[ kschl = 'MWVS' ]-wmwst OPTIONAL ).
+    IF gs_tab-vat_amount IS INITIAL.
+
+      gs_tab-vat_amount = VALUE #( gt_mwdat[ kschl = 'MWVN' ]-wmwst OPTIONAL ).
+    ENDIF.
+
+    IF gs_tab-vat_amount IS INITIAL.
+      gs_tab-vat_amount = VALUE #( gt_mwdat[ kschl = 'MWVZ' ]-wmwst OPTIONAL ).
+    ENDIF.
+
+    gs_po-vat_amount = gs_tab-vat_amount + gs_po-vat_amount.
+
+
+    """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+    DATA(ls_marc) = VALUE #( lt_marc[ matnr = ls_ekpo-matnr ] OPTIONAL ).
+    gs_tab-hsn_code = ls_marc-steuc.
+    gs_tab-uom = ls_ekpo-meins.
+
+    CONDENSE: gs_tab-uom.
+*********soc by ext_kariroka
+    IF im_komv[] IS NOT INITIAL OR im_ekko IS NOT INITIAL.
+      READ TABLE im_komv INTO DATA(lw1_komv) WITH KEY kschl = 'JEXS' kposn = ls_ekpo-ebelp.
+      IF sy-subrc = 0.
+        gs_tab-amount = lw1_komv-kbetr + ls_ekpo-netwr .
+      ENDIF.
+      gs_po-bill_add = gs_tab-bill_add.
+      gs_po-bill_add1 = gs_tab-bill_add1.
+      gs_po-bill_code = gs_tab-bill_plant.
+
+      APPEND gs_tab TO gt_tab.
+      lv_total = lv_total + gs_tab-amount.
+      CLEAR gs_tab.
+    ELSE.
+****  eoc by ext_kariroka
+
+      SELECT SINGLE kbetr FROM prcd_elements INTO @lv_var1
+    WHERE knumv = @gs_ekko-knumv AND kposn = @ls_ekpo-ebelp AND kschl EQ 'JEXS'. "#EC CI_NOORDER
+*    gs_tab-amount = lv_var1 +  ls_ekpo-netwr    .
+
+*** BOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+      gs_tab-amount = lv_var1 + ls_ekpo-netwr .
+*** EOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+
+      gs_po-bill_add = gs_tab-bill_add.
+      gs_po-bill_add1 = gs_tab-bill_add1.
+      gs_po-bill_code = gs_tab-bill_plant.
+
+      APPEND gs_tab TO gt_tab.
+
+      lv_total = lv_total + gs_tab-amount.
+      CLEAR gs_tab.
+    ENDIF.
+    CLEAR: lv_value , lv_value1, ls_prcd2, ls_prcd3, gv_kwert,gv_dis1, gv_dis2, gv_dis3.
+  ENDLOOP.
+
+  gt_tab1[] = gt_tab[].
+
+
+  IF gt_tab1 IS NOT INITIAL.
+    gs_tab = gt_tab[ 1 ].
+  ENDIF.
+
+  DELETE gt_tab1 WHERE bill_plant = gs_tab-bill_plant.
+  DATA(lv_lines) = lines( gt_tab1 ).
+
+  IF lv_lines NE 0.
+    gv_bill = ' '.
+    gv_delv = 'Y'.
+  ELSE.
+    gv_bill = 'X'.
+    gv_delv = ' '.
+
+
+  ENDIF.
+
+  gs_po-total = lv_total.
+*  *****  soc by ext_kariroka for fetching freight details from komv as prcdelements is not updated.
+  IF im_komv[] IS NOT INITIAL. """ added by ext_kariroka on 22.11.2022
+    SORT im_komv[].
+
+    LOOP AT im_komv INTO DATA(ls_komv) WHERE kschl EQ 'FRA1' OR kschl EQ 'FRB1' OR kschl EQ 'ZPFP'.
+      gs_po-freight = gs_po-freight + ls_komv-kwert.
+    ENDLOOP.
+
+  ELSE.
+***  ******EOC by ext_kariroka fetching freight details from komv as prcdelements is not updated..
+    SELECT SUM( kwert ) FROM prcd_elements INTO @gs_po-freight
+  WHERE knumv = @gs_ekko-knumv  AND kschl IN ( 'FRA1','FRB1','ZPFP' ).
+  ENDIF.
+********  adding by amey
+  IF lt_ekpo IS INITIAL .
+    CLEAR gs_po-freight.
+  ENDIF.
+*****  eoc by amey
+  gs_po-grand_total = lv_total + gs_po-freight.
+*** BOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+  lv_temp1 = gs_po-grand_total.
+*** EOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+**************Grand total amount conversion in words******************
+
+
+  CALL FUNCTION 'SPELL_AMOUNT'
+    EXPORTING
+      amount    = lv_temp1
+      currency  = 'AED'
+*     FILLER    = ' '
+      language  = sy-langu
+    IMPORTING
+      in_words  = gs_words
+    EXCEPTIONS
+      not_found = 1
+      too_large = 2
+      OTHERS    = 3.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+*** BOC by EXT_MANJPHAT-05/09/2022 - RBDK901158
+  DATA(lv_words) = |{ gs_words-word } { 'Dirhams and' } { gs_words-decword } { 'Fils only' }|.
+  gs_po-amount_words = to_mixed( lv_words ).
+*** EOC by EXT_MANJPHAT-05/09/2022 - RBDK901158
+
+*** BOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+  CLEAR lv_temp1.
+*** EOC by EXT_MANJPHAT-09/09/2022 - RBDK901263
+  DATA: lt_line TYPE TABLE OF tline,
+        wa_line TYPE tline.
+  DATA:  gv_name1 TYPE thead-tdname .
+  gv_name1 = gv_ebeln.
+
+  CALL FUNCTION 'READ_TEXT'
+    EXPORTING
+      client                  = sy-mandt
+      id                      = 'F01'
+      language                = 'E'
+      name                    = gv_name1
+      object                  = 'EKKO'
+*     ARCHIVE_HANDLE          = 0
+*     LOCAL_CAT               = ' '
+* IMPORTING
+*     HEADER                  =
+*     OLD_LINE_COUNTER        =
+    TABLES
+      lines                   = lt_line
+    EXCEPTIONS
+      id                      = 1
+      language                = 2
+      name                    = 3
+      not_found               = 4
+      object                  = 5
+      reference_check         = 6
+      wrong_access_to_archive = 7
+      OTHERS                  = 8.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+
+  LOOP AT lt_line INTO wa_line.
+
+    gs_po-remarks = wa_line-tdline .
+
+  ENDLOOP.
+  APPEND gs_po TO gt_po.
+
+  CALL FUNCTION 'SSF_FUNCTION_MODULE_NAME'
+    EXPORTING
+      formname           = 'ZSF_MM_PO_UAE'
+*     VARIANT            = ' '
+*     DIRECT_CALL        = ' '
+    IMPORTING
+      fm_name            = gv_fm_name
+    EXCEPTIONS
+      no_form            = 1
+      no_function_module = 2
+      OTHERS             = 3.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+*--SOC:PD: For Vendor email Functionality
+  DATA lv_prog TYPE char10.
+
+  DATA : output_opt TYPE  ssfcompop.
+  DATA : gs_control TYPE ssfctrlop.
+*  DATA : gs_op_info TYPE ssfcrescl.
+  DATA : gv_devtype    TYPE rspoptype.
+
+*Get Device Type
+  CALL FUNCTION 'SSF_GET_DEVICE_TYPE'
+    EXPORTING
+      i_language             = sy-langu
+    IMPORTING
+      e_devtype              = gv_devtype
+    EXCEPTIONS
+      no_language            = 1
+      language_not_installed = 2
+      no_devtype_found       = 3
+      system_error           = 4
+      OTHERS                 = 5.
+
+  gs_control-getotf    = 'X'.
+  gs_control-no_dialog = 'X'.
+  gs_control-preview   = 'X'.
+
+  output_opt-tddest    = 'LP01'.
+  output_opt-tdprinter    = gv_devtype.
+
+  CHECK gv_fm_name IS NOT INITIAL.
+  CALL FUNCTION gv_fm_name
+    EXPORTING
+*     ARCHIVE_INDEX      =
+*     ARCHIVE_INDEX_TAB  =
+*     ARCHIVE_PARAMETERS =
+*     CONTROL_PARAMETERS =
+*     MAIL_APPL_OBJ      =
+*     MAIL_RECIPIENT     =
+*     MAIL_SENDER        =
+*     OUTPUT_OPTIONS     =
+*     USER_SETTINGS      = 'X'
+      control_parameters = gs_control
+      output_options     = output_opt
+      gs_po              = gs_po
+      gv_delv            = gv_delv
+      gv_bill            = gv_bill
+    IMPORTING
+      job_output_info    = gs_op_info
+    TABLES
+      gt_tab             = gt_tab
+    EXCEPTIONS
+      formatting_error   = 1
+      internal_error     = 2
+      send_error         = 3
+      user_canceled      = 4
+      OTHERS             = 5.
+ENDFUNCTION.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

@@ -1,0 +1,3068 @@
+*&---------------------------------------------------------------------*
+*& Report  ZZREPT_MM_PR_EMAIL
+*&
+*&
+*&---------------------------------------------------------------------*
+***********************************************************************
+* Program Title: ZZREPT_MM_PR_EMAIL
+*                                                                     *
+* Date : 20/08/2022   *
+*                                                                     *
+* Technical Consultant : Gaurav K
+*                                    *                                *
+** Functional Consultant : Nitin K                            *
+
+* Description  : This Program is used for PO Workflow Email part
+*this is a standard program copy*              *      *
+*                                                                     *
+* Module name  : MM                                                  *
+*                                                                     *
+* Type         : Report                                               *
+*                                                                     *
+* Special note :                                                      *
+*---------------------------------------------------------------------*
+* Related Objects: Transaction Code <T-CODE>                          *
+*---------------------------------------------------------------------*
+*                       Modification History                          *
+*---------------------------------------------------------------------*
+* Date     | USER ID       | CMS#  | Transport  | Mod.Key             *
+*----------|---------------|-------|------------|---------------------*
+*20.08.2022|EXT_AMEYBAPA       |            | Intital Version     *
+*----------|---------------|-------|------------|---------------------*
+*          |               |       |            | Mod01               *
+*----------|---------------|-------|------------|---------------------*
+*          |               |       |            | Mod02               *
+*----------|---------------|-------|------------|---------------------*
+*          |               |       |            | Mod03               *
+*---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+REPORT zzrept_mm_po_email.
+
+DEFINE swu_trace_write.
+  swu_trace_write_formsmsg &2
+         &1
+         &4 &3 &5 &6 &7 &8 &9.
+END-OF-DEFINITION.
+
+
+TABLES: swwwihead,
+        swu_wlscan,
+        swu_wlscan2,
+        rs38l.
+
+********************************************************************
+* Parameters                                                       *
+********************************************************************
+
+* Instance data
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-t06.
+  PARAMETERS: p_jobsuf LIKE swu_wlscan2-curr_numb DEFAULT '2'.
+* '1' is the suffix for SAPforms, so here we choose '2' as default.
+  SELECT-OPTIONS:  p_tasks FOR  swwwihead-wi_rh_task.
+  PARAMETERS: p_langu  LIKE t100-sprsl.
+  PARAMETERS: p_new    TYPE char1 AS CHECKBOX.
+  PARAMETERS: p_psubst TYPE char1 AS CHECKBOX.
+SELECTION-SCREEN END   OF BLOCK b1.
+
+* How many messages should be sent?
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-t01.
+
+  PARAMETERS: x_n14all RADIOBUTTON GROUP g1 USER-COMMAND chck,
+              " For each work item one message is sent
+              x_14all  RADIOBUTTON GROUP g1
+                       DEFAULT 'X'.
+  " One message per work item
+SELECTION-SCREEN END   OF BLOCK b2.
+
+* With executable attachment (Shortcut)
+SELECTION-SCREEN BEGIN OF BLOCK b3 WITH FRAME TITLE TEXT-t02.
+  PARAMETERS: x_sc_inb AS CHECKBOX  USER-COMMAND chck,
+              " shortcut for inbox
+              p_inb_ta TYPE tcode DEFAULT 'SO01',
+              x_sc_dis AS CHECKBOX  USER-COMMAND chck,
+              " shortcut for display
+              x_sc_exe AS CHECKBOX  USER-COMMAND chck.
+  " shortcut for execute
+SELECTION-SCREEN END   OF BLOCK b3.
+
+* Textlines for standard notification text
+SELECTION-SCREEN BEGIN OF BLOCK b4 WITH FRAME TITLE TEXT-t03.
+  PARAMETERS: p_s_nac LIKE sy-msgid     DEFAULT 'SWU_NOTIF'.
+  PARAMETERS: p_s_nan LIKE sy-msgno     DEFAULT '001'.
+  PARAMETERS: p_prol  LIKE dokhl-object DEFAULT 'SWU_NOTIF_PROLOG1'.
+  PARAMETERS: p_epil  LIKE dokhl-object DEFAULT 'SWU_NOTIF_EPILOG1'.
+SELECTION-SCREEN END   OF BLOCK b4.
+
+* shortcut parameters
+SELECTION-SCREEN BEGIN OF BLOCK b5 WITH FRAME TITLE TEXT-t07.
+  PARAMETERS: p_logon TYPE text50.
+SELECTION-SCREEN END   OF BLOCK b5.
+
+* user exits
+SELECTION-SCREEN BEGIN OF BLOCK b8 WITH FRAME TITLE TEXT-t08.
+  SELECT-OPTIONS:  p_expre FOR rs38l-name.
+  SELECT-OPTIONS:  p_exadr FOR rs38l-name.
+SELECTION-SCREEN END   OF BLOCK b8.
+
+* Parameters for a single run
+SELECTION-SCREEN BEGIN OF BLOCK b6 WITH FRAME TITLE TEXT-t04.
+  PARAMETERS: p_fromd LIKE sy-datum,
+              p_fromt LIKE sy-uzeit,
+              " only work items created after this date/time
+              " are considered
+              " these parameters overrule the table settings
+              p_user  LIKE sy-uname.
+  " only messages for work items in this user's inbox
+  " are forwarded
+SELECTION-SCREEN END   OF BLOCK b6.
+
+* Protocol
+SELECTION-SCREEN BEGIN OF BLOCK b7 WITH FRAME TITLE TEXT-t05.
+  PARAMETERS: x_err_tr RADIOBUTTON GROUP g2 DEFAULT 'X',
+              "trace errors only
+              x_alw_tr RADIOBUTTON GROUP g2.
+  "trace everything
+SELECTION-SCREEN END   OF BLOCK b7.
+
+********************************************************************
+* Declarations                                                     *
+********************************************************************
+
+INCLUDE: rswuincl.                     " workflow constants
+INCLUDE: rswugdat.                     " for trace writing > 3.1
+
+TYPES: t_solisti1_tab TYPE TABLE OF solisti1.
+
+TYPES: BEGIN OF t_user_data,
+         uname       TYPE syuname,
+         langu       TYPE sylangu,
+         email       TYPE string,
+         logon_langu TYPE sylangu,  " note 849251
+         sent        TYPE xfeld,
+       END OF t_user_data.
+
+TYPES: BEGIN OF t_substitution,
+         user       TYPE syuname,
+         substitute TYPE syuname,
+         profile    TYPE hr_rep_prf,
+       END OF t_substitution.
+
+TYPES: BEGIN OF t_wi_data,
+         wi_id  LIKE swwwihead-wi_id,
+         tclass TYPE hr_task_cl,
+       END OF t_wi_data.
+
+TYPES: t_user_data_tab    TYPE TABLE OF t_user_data.
+TYPES: t_substitution_tab TYPE TABLE OF t_substitution.
+TYPES: sopcklsti1_tab     TYPE TABLE OF sopcklsti1.
+
+CONSTANTS:
+  c_docu_id_dialog_text LIKE  dokhl-id   VALUE 'DT',
+  c_docu_typ_e          LIKE  dokil-typ  VALUE 'E',
+  c_action_display      TYPE  char40     VALUE 'DISPLAY',
+  c_action_execute      TYPE  char40     VALUE 'EXECUTE',
+  c_esc_unix            TYPE  c          VALUE 'U',
+  c_com_type_int        TYPE  so_snd_art VALUE 'INT',
+  c_pd_otype_usr        LIKE  swhactor-otype VALUE 'US'.
+
+* miscellaneous
+DATA:  l_crlf(2)             TYPE  c.
+DATA: BEGIN OF crlf,
+        x(1) TYPE x VALUE '0D',
+        y(1) TYPE x VALUE '0A',
+      END OF crlf.
+DATA   l_dynp_valu TYPE doku_obj. "dynfieldvalue.
+
+* enqueue
+DATA: l_key       TYPE char40,
+      lv_lockuser TYPE c LENGTH 8.
+
+* Send options
+DATA: BEGIN OF s_opt,
+        one4all,                        " one message for all work items
+        shortcut_inbox,                 " shortcut for opening the inbox
+        shortcut_display,               " shortcut for WI display
+        shortcut_execute,               " shortcut for WI execute
+        no_shortcuts,                   " no shortcuts at all
+      END OF s_opt.
+
+* Scheduling data
+DATA: l_from_date       LIKE sy-datum,
+      l_from_time       LIKE sy-uzeit,
+      l_to_date         LIKE sy-datum,
+      l_to_time         LIKE sy-uzeit,
+      l_from_tstamp     TYPE timestampl,
+      l_to_tstamp       TYPE timestampl,
+      l_set_lastrun     LIKE sy-binpt,  " Whether or not to treat this
+      " as a full run and set the last-run timestamp.
+      l_system_timezone TYPE sy-zonlo.
+
+* Work item data
+RANGES task_sel FOR swwwihead-wi_rh_task.
+
+DATA: lt_users     LIKE swhactor  OCCURS 0 WITH HEADER LINE,
+      lt_wi_data   TYPE t_wi_data OCCURS 0 WITH HEADER LINE,
+      lt_task_tab  LIKE swhactor  OCCURS 0 WITH HEADER LINE,
+      l_uname      LIKE soud-usrnam,
+      l_send_wi_id LIKE swwwihead-wi_id.
+
+* Mail data
+DATA: ls_address        TYPE t_user_data,
+      lt_user_addresses LIKE sousradri1 OCCURS 0 WITH HEADER LINE,
+      l_items_sent,
+      l_proxy_email     TYPE swu_prxadr,
+      l_langu_doc       LIKE t100-sprsl.
+
+* text handling
+DATA: l_text_prolog TYPE string,
+      l_text_epilog TYPE string,
+      l_body        TYPE string.
+
+* user data
+DATA: lt_user_data TYPE TABLE OF t_user_data,
+      wa_user_data TYPE t_user_data.
+
+* Error and trace handling data
+DATA: l_msg_v1        LIKE balm-msgv1,
+      lo_log          TYPE REF TO cl_swn_log,
+      l_msg_text(100) TYPE c.
+
+* user exit data
+RANGES rt_exit_prep      FOR rs38l-name.
+RANGES rt_exit_addr      FOR rs38l-name.
+
+* General purpose data
+DATA: l_count      LIKE sy-index,
+      l_tabix      LIKE sy-tabix,
+      l_mails_sent TYPE i.
+
+* Table for substitution
+DATA: BEGIN OF g_substitutions OCCURS 0, " global variable
+        user       LIKE sy-uname,
+        substitute LIKE sy-uname,
+        profile    TYPE hr_rep_prf,
+      END OF g_substitutions.
+DATA: l_subrc            TYPE sysubrc.
+DATA: l_noclass          TYPE hr_task_cl.
+DATA: lt_77ro            TYPE TABLE OF t77ro.
+DATA: wa_77ro            TYPE t77ro.
+* Header definition
+DATA: h_wi_header  LIKE swwwihead,                          "#EC NEEDED
+      ls_wi_header LIKE swwwihead.
+
+* remember last p_jobsuf
+DATA: l_last_jobsuf TYPE swu_wlscan2-curr_numb.
+
+**************************************************************
+* Initialize send options                                    *
+**************************************************************
+
+AT SELECTION-SCREEN OUTPUT.
+* check the combination 14all/collection mail
+  IF NOT x_14all IS INITIAL.
+    CLEAR x_sc_dis. CLEAR x_sc_exe.
+*    x_sc_inb = 'X'.
+* deactivate the radio-buttons
+    LOOP AT SCREEN.
+      IF screen-name = 'X_SC_DIS' OR
+         screen-name = 'X_SC_EXE' OR
+         screen-name = 'P_EPIL'.
+        screen-input = 0.
+        MODIFY SCREEN.
+      ENDIF.
+    ENDLOOP.
+  ELSE.
+* re-activate the radio-buttons
+    LOOP AT SCREEN.
+      IF screen-name = 'X_SC_DIS' OR
+         screen-name = 'X_SC_EXE' OR
+         screen-name = 'P_EPIL'.
+        screen-input = 1.
+        MODIFY SCREEN.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+* do not alter fields if at least one field
+* has been changed
+  IF p_prol  NP 'SWU_NOTIF*' OR
+     p_s_nac NP 'SWU_NOTIF*' OR
+     p_epil  NE space AND
+     p_epil  NP 'SWU_NOTIF*'.
+*    customer has modified
+  ELSE.
+* switch the default values
+    IF x_14all = 'X'.
+      IF p_s_nac CP 'SWU_NOTIF*'.
+        p_s_nan = '001'.
+      ENDIF.
+      IF x_sc_inb IS INITIAL.
+        p_prol = 'SWU_NOTIF_INBOX'.
+      ELSE.
+        p_prol = 'SWU_NOTIF_INBOX2'.
+      ENDIF.
+      p_epil = space.
+    ELSE.
+      p_s_nan = '002'.
+      p_prol = 'SWU_NOTIF_PROLOG1'.
+      IF x_sc_inb = 'X' OR x_sc_dis = 'X' OR x_sc_exe = 'X' .
+        p_epil = 'SWU_NOTIF_EPILOG2'.
+      ELSE.
+        p_epil = 'SWU_NOTIF_EPILOG1'.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+AT SELECTION-SCREEN ON p_jobsuf.
+  IF sy-batch <> 'X' AND p_jobsuf <> l_last_jobsuf.
+    l_last_jobsuf = p_jobsuf.
+    SELECT SINGLE * FROM swu_wlscan2 WHERE curr_numb = p_jobsuf.
+    IF sy-subrc = 0.
+      MESSAGE i025(swu_notif).
+    ELSE.
+      IF p_jobsuf < 10.
+        SELECT SINGLE * FROM swu_wlscan WHERE curr_numb = p_jobsuf.
+        IF sy-subrc = 0.
+          MESSAGE i025(swu_notif).
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+AT SELECTION-SCREEN ON p_prol.
+
+  IF NOT p_prol IS INITIAL.
+    CALL FUNCTION 'SWF_DOCUMENTATION_CHECK'
+      EXPORTING
+        docu_object             = p_prol
+      EXCEPTIONS
+        documentation_not_found = 1
+        OTHERS                  = 2.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+              WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ENDIF.
+  ENDIF.
+
+AT SELECTION-SCREEN ON p_epil.
+
+  IF NOT p_epil IS INITIAL.
+    CALL FUNCTION 'SWF_DOCUMENTATION_CHECK'
+      EXPORTING
+        docu_object             = p_epil
+      EXCEPTIONS
+        documentation_not_found = 1
+        OTHERS                  = 2.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+              WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ENDIF.
+  ENDIF.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_prol.
+
+  PERFORM get_dynpro_value USING 'P_PROL' CHANGING l_dynp_valu.
+
+  CALL FUNCTION 'DOCU_VALUE_REQUEST'
+    EXPORTING
+      id           = c_docu_id_dialog_text
+      object       = l_dynp_valu
+*     LANGU        = SY-LANGU
+      typ          = c_docu_typ_e
+*     FOR_MAINTAIN = 'X'
+      for_display  = 'X'
+*     WINDOW_TITLE =
+    IMPORTING
+      value_object = p_prol.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_epil.
+
+  PERFORM get_dynpro_value USING 'P_EPIL' CHANGING l_dynp_valu.
+
+  CALL FUNCTION 'DOCU_VALUE_REQUEST'
+    EXPORTING
+      id           = c_docu_id_dialog_text
+      object       = l_dynp_valu
+*     LANGU        = SY-LANGU
+      typ          = c_docu_typ_e
+*     FOR_MAINTAIN = 'X'
+      for_display  = 'X'
+*     WINDOW_TITLE =
+    IMPORTING
+      value_object = p_epil.
+
+START-OF-SELECTION.
+
+*- assign crlf. Unfortunately this is different in 4.6
+*- and unicode systems
+
+*  l_crlf = crlf.
+  l_crlf = cl_abap_char_utilities=>cr_lf.
+
+* Use the task list as a selection criterion if necessary.
+  IF task_sel[] IS INITIAL.
+    task_sel[] = p_tasks[].
+  ENDIF.
+
+* Use given language or default language
+  IF p_langu IS INITIAL.
+    l_langu_doc = sy-langu.
+  ELSE.
+    l_langu_doc = p_langu.
+  ENDIF.
+
+* Set the send options.
+  IF NOT x_14all IS INITIAL.
+    s_opt-one4all = 'X'.
+  ENDIF.
+  IF x_sc_inb IS INITIAL.
+    s_opt-shortcut_inbox = 'X'.
+  ENDIF.
+  IF x_sc_dis IS INITIAL.
+    s_opt-shortcut_display = 'X'.
+  ENDIF.
+  IF x_sc_exe IS INITIAL.
+    s_opt-shortcut_execute = 'X'.
+  ENDIF.
+  IF x_sc_inb IS INITIAL AND
+     x_sc_dis IS INITIAL AND
+     x_sc_exe IS INITIAL.
+    s_opt-no_shortcuts = 'X'.
+  ENDIF.
+
+* user exits
+  IF rt_exit_prep[] IS INITIAL.
+    rt_exit_prep[] = p_expre[].
+  ENDIF.
+  IF rt_exit_addr[] IS INITIAL.
+    rt_exit_addr[] = p_exadr[].
+  ENDIF.
+
+*- establish trace
+  lo_log = cl_swn_log=>get_instance( ).
+  lo_log->create_log( i_subobject = 'NOTIFICATIONS' ).
+
+*- trace the selection options
+  MESSAGE s015(swu_notif)
+    WITH 'p_jobsuf' p_jobsuf                                "#EC NOTEXT
+    INTO l_msg_text.
+  lo_log->add_message( ).
+  LOOP AT task_sel.
+    MESSAGE s015(swu_notif)
+      WITH 'p_tasks' task_sel-low                           "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDLOOP.
+  LOOP AT rt_exit_prep.
+    MESSAGE s015(swu_notif)
+      WITH 'p_expre' rt_exit_prep-low                       "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDLOOP.
+  LOOP AT rt_exit_addr.
+    MESSAGE s015(swu_notif)
+      WITH 'p_expre' rt_exit_addr-low                       "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDLOOP.
+  IF x_sc_inb IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'x_sc_inb' x_sc_inb                              "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF x_sc_dis IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'x_sc_dis' x_sc_dis                              "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF x_sc_exe IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'x_sc_exe' x_sc_exe                              "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_s_nac IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_s_nac' p_s_nac                                "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_s_nan IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_s_nan' p_s_nan                                "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_prol IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_prol' p_prol                                  "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_epil IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_epil' p_epil                                  "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_logon IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_logon' p_logon                                "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_fromd IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_fromd' p_fromd                                "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_fromt IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_fromt' p_fromt                                "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF p_user IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'p_user' p_user                                  "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF x_err_tr IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'x_err_tr' x_err_tr                              "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+  IF x_alw_tr IS NOT INITIAL.
+    MESSAGE s015(swu_notif)
+      WITH 'x_alw_tr' x_alw_tr                              "#EC NOTEXT
+      INTO l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+
+*- enqueue
+  CONCATENATE 'RSWUWFML2' '_' p_jobsuf INTO l_key.
+  CONDENSE l_key NO-GAPS.
+  CALL FUNCTION 'ENQUEUE_ESWREP'
+    EXPORTING
+      mode_swclirep  = 'X'
+*     CLIENT         = im_client
+      name           = l_key
+*     X_NAME         = ' '
+      _scope         = '1'
+*     _WAIT          = ' '
+*     _COLLECT       = ' '
+    EXCEPTIONS
+      foreign_lock   = 1
+      system_failure = 2
+      OTHERS         = 3.
+
+  IF sy-subrc = 1.
+    lv_lockuser = sy-msgv1.
+    MESSAGE ID 'SWF_UTL_001' TYPE 'E' NUMBER 200  WITH l_key lv_lockuser INTO l_msg_text.
+    WRITE: / l_msg_text.
+    lo_log->add_message( i_probclass = lo_log->prio_top ).
+    lo_log->save_log( ).
+    lo_log->refresh_log( ).
+    IF sy-batch = 'X'.
+      MESSAGE ID 'SWF_UTL_001' TYPE 'E' NUMBER 200  WITH l_key lv_lockuser.
+    ENDIF.
+    EXIT.
+  ELSEIF sy-subrc <> 0.
+    MESSAGE ID 'WL'                           ##MG_MISSING
+      TYPE 'E' NUMBER 583
+      INTO l_msg_text.
+    WRITE: / l_msg_text.
+    lo_log->add_message( i_probclass = lo_log->prio_top ).
+    lo_log->save_log( ).
+    lo_log->refresh_log( ).
+    IF sy-batch = 'X'.
+      MESSAGE ID 'WL'                         ##MG_MISSING
+        TYPE 'E' NUMBER 583.
+    ENDIF.
+    EXIT.
+  ENDIF.
+
+*********************************************************
+* check the sender address
+**********************************************************
+
+* SAPoffice cannot send SMTP e-mail when the current user has
+* no home SMTP address assigned.
+
+*---- note 1596022: SAP Office uses the Default domain to generate
+*---- the sender address, if the user does not have a mail address
+*---- Due to this: remove the check
+
+*  PERFORM get_email_address_cam
+*    USING    sy-uname
+*    CHANGING ls_address.
+*
+**  report error
+*  IF ls_address-email IS INITIAL.
+*    MESSAGE e019(swu_notif)
+*      WITH sy-uname
+*      INTO l_msg_text.
+*    lo_log->add_message( i_probclass = lo_log->prio_top ).
+*    WRITE: / l_msg_text.
+**-   save the trace
+*    lo_log->save_log( ).
+*    lo_log->refresh_log( ).
+*    EXIT.
+*  ENDIF.
+
+*********************************************************
+* Get the system time zone                              *
+*********************************************************
+
+* The system time zone is used to convert the scheduling
+* information of the report into a time stamp.
+
+  CALL FUNCTION 'GET_SYSTEM_TIMEZONE'
+    IMPORTING
+      timezone            = l_system_timezone
+    EXCEPTIONS
+      customizing_missing = 1
+      OTHERS              = 2.
+  IF sy-subrc <> 0.
+*   report error
+    MESSAGE e020(swu_notif)                  ##MG_MISSING
+      WITH sy-uname
+      INTO l_msg_text.
+    lo_log->add_message( i_probclass = lo_log->prio_top ).
+    WRITE: / l_msg_text.
+*-  save the trace
+    lo_log->save_log( ).
+    lo_log->refresh_log( ).
+    EXIT.
+  ENDIF.
+
+**************************************************************
+* Read the scheduling information                            *
+**************************************************************
+
+* Read the last date and time the report was run successfully
+* for this job suffix.
+
+* If the corresponding report parameters are not set and
+* we have not found an entry, swu_wlscan-l_last_date and
+* swu_wlscan-l_last_time will be initial, which does not cause any harm.
+
+  IF p_fromt = space.
+    CLEAR p_fromt.
+  ENDIF.
+
+  IF p_fromd IS INITIAL AND
+     p_fromt IS INITIAL AND
+     p_user  IS INITIAL.
+
+*  If entries in old table swu_wlscan exist, migrate all entries to new table swu_wlscan2 first.
+    SELECT SINGLE * FROM swu_wlscan.                    "#EC CI_NOORDER
+    IF sy-subrc = 0.
+      SELECT * FROM swu_wlscan INTO swu_wlscan.
+        swu_wlscan2-curr_numb = swu_wlscan-curr_numb.
+        swu_wlscan2-last_date = swu_wlscan-last_date.
+        swu_wlscan2-last_time = swu_wlscan-last_time.
+        swu_wlscan2-last_ts = swu_wlscan-last_ts.
+        INSERT swu_wlscan2 FROM swu_wlscan2.
+      ENDSELECT.
+      DELETE FROM swu_wlscan.                          "#EC CI_NOWHERE.
+      CALL FUNCTION 'DB_COMMIT'.
+    ENDIF.
+
+    SELECT SINGLE FOR UPDATE * FROM swu_wlscan2 WHERE curr_numb = p_jobsuf.
+    IF swu_wlscan2-last_ts IS INITIAL.
+      l_from_date = swu_wlscan2-last_date.
+      l_from_time = swu_wlscan2-last_time.
+    ELSE.
+      l_from_tstamp = swu_wlscan2-last_ts.
+    ENDIF.
+    l_set_lastrun = 'X'.
+  ELSE.
+    l_from_date = p_fromd.
+    l_from_time = p_fromt.
+  ENDIF.
+  IF l_from_tstamp IS INITIAL.
+*-   create 'from' time stamp
+    IF l_from_date IS NOT INITIAL OR l_from_time IS NOT INITIAL.
+      CONVERT DATE l_from_date TIME l_from_time
+            INTO TIME STAMP l_from_tstamp
+            TIME ZONE l_system_timezone.
+      IF sy-subrc <> 0.
+*        report error
+        MESSAGE e021(swu_notif)
+          WITH l_from_date l_from_time
+          INTO l_msg_text.
+        lo_log->add_message( i_probclass = lo_log->prio_top ).
+        WRITE: / l_msg_text.
+*-       save the trace
+        lo_log->save_log( ).
+        lo_log->refresh_log( ).
+        EXIT.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+*- 'to' time stamp is current time minus 5 seconds to make
+*- sure that workitems currently being processed are caught
+  GET TIME STAMP FIELD l_to_tstamp.
+  l_to_tstamp = cl_abap_tstmp=>add( tstmp = l_to_tstamp secs = -5 ).
+
+* note 929393: enhanced logging
+  MESSAGE s015(swu_notif)
+    WITH 'from timestamp' l_from_tstamp                     "#EC NOTEXT
+    INTO l_msg_text.
+  lo_log->add_message( ).
+  MESSAGE s015(swu_notif)
+    WITH 'to timestamp' l_to_tstamp                         "#EC NOTEXT
+    INTO l_msg_text.
+  lo_log->add_message( ).
+  MESSAGE s015(swu_notif)
+    WITH 'current time' sy-uzeit                            "#EC NOTEXT
+    INTO l_msg_text.
+  lo_log->add_message( ).
+
+*****************************************************
+* prepare substitution stuff                        *
+*****************************************************
+
+* determine substitution profile which means no restriction
+  PERFORM re77s0 IN PROGRAM mstt77s0
+    USING 'WORKF' 'DEFCL' l_noclass l_subrc.                "#EC NOTEXT
+
+*- read the correlation between profile and tclass
+  SELECT * FROM t77ro INTO TABLE lt_77ro.               "#EC CI_GENBUFF
+*- replace NO_CLASS by space
+  CLEAR wa_77ro-tclass.
+  MODIFY lt_77ro FROM wa_77ro
+    TRANSPORTING tclass
+    WHERE tclass = l_noclass.
+
+**************************************************************
+* call user exit which may change environment data           *
+**************************************************************
+
+  IF NOT rt_exit_prep[] IS INITIAL.
+    LOOP AT rt_exit_prep.
+      IF NOT rt_exit_prep-low IS INITIAL.
+*       note 2178778: Add authority check for function modules
+        PERFORM check_authority_for_fm USING rt_exit_prep-low.
+        CALL FUNCTION rt_exit_prep-low.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+*****************************************************
+* Set the notification text                         *
+*****************************************************
+
+  PERFORM get_document USING    c_docu_id_dialog_text
+                                p_prol
+                                l_langu_doc
+                       CHANGING l_text_prolog.
+
+  PERFORM get_document USING    c_docu_id_dialog_text
+                                p_epil
+                                l_langu_doc
+                       CHANGING l_text_epilog.
+
+**************************************************************
+* read the proxy table                                       *
+**************************************************************
+
+* check whether the proxy table contains a matching entry
+* if yes, the email is sent to the proxy address rather than
+* to the end user's email
+  SELECT proxy_addr INTO l_proxy_email FROM swutyp2adr
+    WHERE form_type = space.
+  ENDSELECT.
+
+**************************************************************
+* Select the work items                                      *
+**************************************************************
+
+  PERFORM select_workitems.
+  IF p_new IS INITIAL.
+    PERFORM select_modified_workitems.
+  ENDIF.
+
+***************************************************************
+* Send the notifications for these work items                 *
+***************************************************************
+
+  PERFORM send_wi_mails.
+
+*write number of sent mails to the log
+  MESSAGE s022(swu_notif)
+    WITH l_mails_sent                                       "#EC NOTEXT
+    INTO l_msg_text.
+  lo_log->add_message( ).
+
+
+*****************************************************************
+* Update the scheduling information                             *
+*****************************************************************
+
+*AR Update table swu_wlscan only when the default is used.
+  IF l_set_lastrun = 'X'.
+    swu_wlscan2-curr_numb = p_jobsuf.
+    swu_wlscan2-last_ts = l_to_tstamp.
+    CLEAR swu_wlscan2-last_date.
+    CLEAR swu_wlscan2-last_time.
+    UPDATE swu_wlscan2.
+    IF sy-subrc <> 0.
+      INSERT swu_wlscan2.
+    ENDIF.
+  ENDIF.
+
+*- save the trace
+  lo_log->save_log( ).
+  lo_log->refresh_log( ).
+
+*- dequeue
+  CALL FUNCTION 'DEQUEUE_ESWREP'
+    EXPORTING
+      mode_swclirep = 'X'
+*     CLIENT        = im_client
+      name          = l_key
+*     X_NAME        = ' '
+*     _SCOPE        = '3'
+*     _SYNCHRON     = ' '
+*     _COLLECT      = ' '
+    .
+
+********************************************************************
+* End of the report                                                *
+********************************************************************
+
+
+
+*********************************************************************
+* Form routines                                                     *
+*********************************************************************
+
+*---------------------------------------------------------------------*
+*       FORM SEND_WI_MAILS                                            *
+*---------------------------------------------------------------------*
+*       Send notifications for the work items in table lt_wi_id      *
+*---------------------------------------------------------------------*
+FORM send_wi_mails.
+
+  DATA: l_subrc            LIKE sy-subrc.
+  DATA: wi_recipients TYPE t_user_data OCCURS 0 WITH HEADER LINE.
+  DATA: ls_address    TYPE t_user_data.
+  DATA: l_user_found  TYPE xfeld.
+
+  FIELD-SYMBOLS: <user_data> TYPE t_user_data.
+
+********************************************************************
+* Read the selected agents (users)                                 *
+********************************************************************
+
+* Loop thru all workitems.
+  LOOP AT lt_wi_data.
+
+    CLEAR lt_users. REFRESH lt_users.
+    CLEAR wi_recipients.
+
+* write to log
+    IF NOT x_alw_tr IS INITIAL.
+      MESSAGE s014(swu_notif) WITH lt_wi_data-wi_id
+        INTO l_msg_text.
+      lo_log->add_message( ).
+    ENDIF.
+
+* Determine the recipients.
+* Excluded agents are removed from table wi_agent_list by FM
+    CALL FUNCTION 'RH_WI_AGENTS_GET'
+      EXPORTING
+        act_wi_id       = lt_wi_data-wi_id
+*       SEARCH_DATE     = SY-DATUM
+*       ONLY_USER       = 'X'
+      TABLES
+*       ACT_ORG_TASK    =
+*       EXCLUDED_AGENTS =
+        wi_agent_list   = lt_users
+      EXCEPTIONS
+        no_active_plvar = 1
+        no_agent_found  = 2
+        general_task    = 3
+        background_task = 4
+        OTHERS          = 5.
+
+    l_subrc = sy-subrc.
+
+*   in contrary to version 1 we don't send to all users
+
+*****************************************************************
+* Determine the recipients of the messages to be sent           *
+*****************************************************************
+
+*   handle general tasks
+    IF l_subrc = 3.
+      MESSAGE s004(swu_notif) WITH lt_wi_data-wi_id
+        INTO l_msg_text.
+      lo_log->add_message( ).
+      CONTINUE.
+    ENDIF.
+
+*   Do users exist?
+    CHECK  l_subrc = 0.
+
+*   Consider substitution. Maybe it's class-specific
+    PERFORM add_substitutes
+        TABLES   lt_users
+        USING    lt_wi_data
+        CHANGING l_subrc.
+
+    LOOP AT lt_users.
+
+      l_uname = lt_users-objid.
+
+*     consider user restriction
+      IF NOT p_user IS INITIAL AND p_user NE l_uname.
+*       no, it's not the user in the selection option -> skip
+        CONTINUE.
+      ENDIF.
+
+*     did we already send to the user?
+      CLEAR: wa_user_data, l_user_found, l_tabix.
+      READ TABLE lt_user_data
+        WITH KEY uname = lt_users-objid BINARY SEARCH
+        ASSIGNING <user_data>.
+      l_tabix = sy-tabix.                                 " note 739988
+      IF sy-subrc = 0.
+        l_user_found = 'X'.
+      ENDIF.
+
+*     If sending only one message for all work items...
+      IF s_opt-one4all = 'X' AND l_user_found = 'X'.
+*         Message to this user has already been sent.
+        CONTINUE.                    " goto loop start
+      ENDIF.
+
+      IF l_user_found IS INITIAL.
+*        New user
+        wa_user_data-uname = l_uname.
+        IF l_tabix <= 0.
+          l_tabix = 1.
+        ENDIF.
+        INSERT wa_user_data INTO lt_user_data
+          INDEX l_tabix.
+        READ TABLE lt_user_data INDEX l_tabix ASSIGNING <user_data>.
+*        read address data
+        CLEAR ls_address.
+        PERFORM get_email_address
+          USING    l_uname
+          CHANGING ls_address.
+
+        IF NOT ls_address-email IS INITIAL.
+*          Only in this case we rely on recipient_address and
+*          comm_type to be set correctly.
+          <user_data>-email = ls_address-email.
+          <user_data>-langu = ls_address-langu.
+          <user_data>-logon_langu = ls_address-logon_langu.  " note 849251
+        ELSEIF rt_exit_addr[] IS INITIAL.
+*          Clear.
+          MESSAGE w013(swu_notif) WITH l_uname
+            INTO l_msg_text.
+          lo_log->add_message( ).
+          CLEAR: <user_data>-email.
+        ENDIF.
+*        If remote address is found then send to the SAPoffice user.
+        <user_data>-uname = l_uname.
+
+      ENDIF. "user found?
+
+      IF NOT <user_data>-email IS INITIAL OR rt_exit_addr[] IS NOT INITIAL.
+*         Convert (e.g. INT -> U).
+        APPEND <user_data> TO wi_recipients.
+      ENDIF.
+    ENDLOOP.
+
+********************************************************************
+* Send the message                                                 *
+********************************************************************
+
+*   Don't send to nobody!
+    CHECK NOT wi_recipients[] IS INITIAL.
+
+    IF s_opt-one4all IS INITIAL.
+*     Set the work item ID for sending. It is not needed
+*     if only one message for all work items is sent.
+      l_send_wi_id = lt_wi_data-wi_id.
+      PERFORM send_messages
+        TABLES   lt_task_tab
+                 wi_recipients
+        USING    l_send_wi_id
+                 s_opt
+        CHANGING l_subrc.
+    ENDIF.
+
+  ENDLOOP.
+
+*- handle the one-for-all case
+  IF NOT s_opt-one4all IS INITIAL AND
+     NOT wi_recipients[] IS INITIAL.
+*-   no message has been sent so far -> do it now
+    CLEAR l_send_wi_id.  " only one message for all work items
+    PERFORM send_messages
+        TABLES    lt_task_tab
+                  wi_recipients
+        USING     l_send_wi_id
+                  s_opt
+        CHANGING  l_subrc.
+  ENDIF.
+
+* If the flag has not been set, output that nothing has been sent.
+  IF l_items_sent IS INITIAL.
+    PERFORM write_nothing_sent.
+  ENDIF.
+
+ENDFORM.                    "send_wi_mails
+
+*&---------------------------------------------------------------------*
+*&      Form  SEND_MESSAGES
+*&---------------------------------------------------------------------*
+*       send mails for a particular work items
+*----------------------------------------------------------------------*
+FORM send_messages TABLES   pt_tasks      STRUCTURE swhactor
+                            pt_recipients TYPE t_user_data_tab
+                   USING    p_wi_id       LIKE swwwihead-wi_id
+                            p_opt         LIKE s_opt
+                   CHANGING p_return_code LIKE sy-subrc.
+
+
+* PRECONDITION: We assume that RECIPIENTS contains
+*   mail recipients.
+
+  INCLUDE <cntain>.
+
+* Build Document content.
+* Three packages of data are declard: one for the lt_content of
+* the whole message, one for the text part of the message,
+* one for the attachment part of the message.
+  DATA: lt_content          LIKE solisti1   OCCURS 0 WITH HEADER LINE,
+        lt_packing_list     LIKE sopcklsti1 OCCURS 0 WITH HEADER LINE,
+        lt_object_header    LIKE solisti1   OCCURS 0 WITH HEADER LINE,
+        lt_content_txt      LIKE solisti1   OCCURS 0 WITH HEADER LINE,
+        lt_packing_list_txt LIKE sopcklsti1 OCCURS 0 WITH HEADER LINE,
+        lt_document_data    LIKE sodocchgi1.
+
+* Mail sending information.
+  DATA: l_express          LIKE sos04-l_sex,
+        lt_real_recipients LIKE somlreci1 OCCURS 0 WITH HEADER LINE,
+        l_sent_to_all      LIKE sonv-flag,
+        l_mail_subject     LIKE sopcklsti1-obj_descr,
+        l_mail_language    LIKE sopcklsti1-obj_langu,
+        l_mail_address     TYPE string.
+
+* Text information.
+*  DATA BEGIN OF lt_text_lines OCCURS 0.
+*          INCLUDE STRUCTURE tline.
+*  DATA END OF lt_text_lines.
+  DATA  lt_text_lines         LIKE tline       OCCURS 0.
+  DATA  lt_stream_lines       TYPE swr_txtlin  OCCURS 0.
+
+* Workitem information.
+  DATA: l_task                LIKE swwwihead-wi_rh_task.
+  DATA: l_wi_header           LIKE swwwihead.
+  DATA: l_wi_type             LIKE swwwihead-wi_type.
+  DATA: ls_wi_hdr             TYPE swr_wihdr.
+  DATA: text_lines TYPE STANDARD TABLE OF tline WITH HEADER LINE.
+  DATA: lt_html_text_lines TYPE STANDARD TABLE OF htmlline.
+  DATA: l_html_text_line TYPE htmlline.
+  DATA: lt_command_lines TYPE STANDARD TABLE OF tline.
+  DATA: ls_command_lines TYPE tline.
+  DATA: l_doctype TYPE so_obj_tp VALUE 'TXT'.
+
+
+* General purpose information.
+  DATA: l_line_no TYPE i,
+        l_count   TYPE i.
+
+**********************************************************
+* Get the info needed to assemble the message            *
+**********************************************************
+  CLEAR lt_text_lines. REFRESH lt_text_lines.
+  CLEAR l_body.                    "<<< insert note 720290
+
+**********************************************************
+* Create text.                                           *
+**********************************************************
+  IF s_opt-one4all IS INITIAL.
+* For each individual work item a message is sent.
+* Get workitem information.
+    CALL FUNCTION 'SWW_WI_HEADER_READ'
+      EXPORTING
+        wi_id       = p_wi_id
+*       READ_FOR_UPDATE = ' '
+      IMPORTING
+        wi_header   = l_wi_header
+      EXCEPTIONS
+        read_failed = 1
+        OTHERS      = 2.
+
+    IF sy-subrc NE 0.
+      l_msg_v1 = p_wi_id.
+      PERFORM write_error_msg USING lt_wi_data-wi_id '312' l_msg_v1
+                      space.
+      p_return_code = 1.
+      EXIT.
+    ENDIF.
+
+****************************************************************
+* Build the mail text, mail subject and mail language          *
+****************************************************************
+
+*   set language of the mail message.
+    IF p_langu IS INITIAL.
+      l_mail_language = l_wi_header-wi_lang.
+    ELSE.
+      l_mail_language = p_langu.
+    ENDIF.
+
+*   translate wi_text to desired language
+    IF l_mail_language <> l_wi_header-wi_lang.
+      CALL FUNCTION 'SWL_WI_TEXT_TRANSLATE'
+        EXPORTING
+          i_langu               = l_mail_language
+        CHANGING
+          c_wi_header           = l_wi_header
+        EXCEPTIONS
+          wi_read_failed        = 1
+          container_read_failed = 2
+          OTHERS                = 3.
+      IF sy-subrc <> 0.
+*-      leave text untranslated
+      ENDIF.
+    ENDIF.
+
+*   for deadline items get the text from the original item
+*   note 762089 V3: make sure variable replacement works
+*   leave container read up to SWU_GET_TASK_TEXTLINES
+
+    IF l_wi_header-wi_type = 'D'.
+      CALL FUNCTION 'SWW_WI_HEADER_READ'
+        EXPORTING
+          wi_id       = l_wi_header-wi_chckwi
+        IMPORTING
+          wi_header   = h_wi_header
+        EXCEPTIONS
+          read_failed = 1
+          OTHERS      = 2 ##FM_SUBRC_OK.
+*     force the deadline text to be taken
+      l_wi_type = 'D'.                                      "#EC NOTEXT
+      l_task = h_wi_header-wi_rh_task.
+    ELSE.
+*     take the normal work item text
+      l_wi_type = 'W'.                                      "#EC NOTEXT
+      l_task = l_wi_header-wi_rh_task.
+    ENDIF.
+
+*   perform variable substitution for task description.
+    TRY.
+        CALL FUNCTION 'SWU_GET_TASK_TEXTLINES'
+          EXPORTING
+            task              = l_task
+            usage             = l_wi_type
+*           language          = l_wi_header-wi_lang
+            language          = l_mail_language
+            wiheader          = l_wi_header
+          TABLES
+            stream_text_lines = lt_stream_lines
+            html_text_lines   = lt_html_text_lines
+            command_lines     = lt_command_lines
+          EXCEPTIONS
+            wrong_usage       = 01
+            text_not_found    = 02
+            text_system_error = 03 ##FM_SUBRC_OK.
+
+        LOOP AT lt_command_lines INTO ls_command_lines.
+          IF ls_command_lines-tdline CP 'MAIL_HTML*'.
+            CLEAR text_lines[].
+            l_doctype = 'HTM'.
+            LOOP AT lt_html_text_lines INTO l_html_text_line.
+              text_lines-tdline = l_html_text_line.
+              APPEND text_lines TO text_lines.
+            ENDLOOP.
+            EXIT.
+          ENDIF.
+        ENDLOOP.
+
+* HTML control handles SPACES correctly, only in case the content table is fully filled
+* => convert to table with 255 characters
+        IF l_doctype = 'HTM'.
+          LOOP AT text_lines.
+            CONCATENATE l_body text_lines-tdline
+              INTO l_body RESPECTING BLANKS.
+          ENDLOOP.
+        ELSE.
+*         convert table to string for easier handling
+          PERFORM table_to_string USING lt_stream_lines[] CHANGING l_body.
+        ENDIF.
+
+      CATCH cx_sy_dyn_call_param_not_found.
+        CALL FUNCTION 'SWU_GET_TASK_TEXTLINES'
+          EXPORTING
+            task              = l_task
+            usage             = l_wi_type
+*           language          = l_wi_header-wi_lang
+            language          = l_mail_language
+            wiheader          = l_wi_header
+          TABLES
+            ascii_text_lines  = lt_text_lines
+          EXCEPTIONS
+            wrong_usage       = 01
+            text_not_found    = 02
+            text_system_error = 03 ##FM_SUBRC_OK.
+*        convert table to string for easier handling
+        PERFORM tline_to_string TABLES lt_text_lines[] CHANGING l_body.
+
+    ENDTRY.
+*--------------------------------------------------------------------*
+*--SOC
+*--------------------------------------------------------------------*
+    IF line_exists( pt_recipients[ 1 ] ).
+       DATA(lv_user_name) = pt_recipients[ 1 ]-uname.
+    ENDIF.
+
+    CASE p_tasks-low.
+      WHEN 'TS20000166'.
+        l_doctype = 'HTM'.
+        zzcl_email_text=>set_po_approver_text( EXPORTING workitem_id   = l_wi_header-wi_chckwi p_wi_id = p_wi_id username = lv_user_name CHANGING l_text_prolog = l_text_prolog ).
+      WHEN 'TS20000168'.
+        l_doctype = 'HTM'.
+        zzcl_email_text=>set_po_initiator_text( EXPORTING workitem_id   = p_wi_id username = lv_user_name CHANGING l_text_prolog = l_text_prolog ).
+    ENDCASE.
+*    IF l_body IS INITIAL.
+**     If there is no text, we create a default text.
+*      l_body = 'This work item has no description.'(m06).
+*    ENDIF.
+*EOC
+*--------------------------------------------------------------------*
+*   assemble mail body:  prolog ... wi text ... epilog
+    CONCATENATE l_text_prolog
+                l_body
+                l_text_epilog
+           INTO l_body.
+
+*   Set subject and language of the mail message.
+    IF p_s_nac IS INITIAL OR p_s_nan IS INITIAL.
+      l_mail_subject = l_wi_header-wi_text.
+    ELSE.
+      PERFORM get_message_text
+         USING p_s_nac p_s_nan l_mail_language
+               sy-sysid l_wi_header-wi_text
+         CHANGING l_mail_subject.
+    ENDIF.
+
+  ELSE.  "s_opt-one4all
+*   There is only one message for all work items.
+
+*   set language of the mail message.
+    IF p_langu IS INITIAL.
+      l_mail_language = sy-langu.
+    ELSE.
+      l_mail_language = p_langu.
+    ENDIF.
+*   subject...
+    IF p_s_nac IS INITIAL OR p_s_nan IS INITIAL.
+      l_mail_subject = '&: You have received new work items.'(s02).
+      REPLACE '&' WITH sy-sysid INTO l_mail_subject.
+      CONDENSE l_mail_subject.
+    ELSE.
+      PERFORM get_message_text
+         USING p_s_nac p_s_nan l_mail_language
+               sy-sysid ''
+         CHANGING l_mail_subject.
+    ENDIF.
+*   body...
+    l_body = l_text_prolog.
+  ENDIF.
+
+**********************************************************
+* Create the text body part                              *
+**********************************************************
+
+* Fill the document lt_content with the text built so far, e.g.
+* workitem long text.
+  PERFORM string_to_table USING l_body CHANGING lt_content_txt[].
+  DESCRIBE TABLE lt_content_txt LINES l_count.
+
+* Update the packing list.
+  CLEAR lt_packing_list_txt.
+  lt_packing_list_txt-head_start = 1.
+  lt_packing_list_txt-head_num   = 0.
+  lt_packing_list_txt-body_start = 1.
+  lt_packing_list_txt-body_num   = l_count.
+  lt_packing_list_txt-doc_type   = l_doctype.
+  lt_packing_list_txt-obj_name   = 'Message'(003).
+  lt_packing_list_txt-obj_descr  =  l_mail_subject.
+  lt_packing_list_txt-obj_langu  =  l_mail_language.
+  APPEND lt_packing_list_txt.
+
+* Update the current line number.
+  l_line_no = l_count.
+
+* Fill the document data.
+  READ TABLE lt_content_txt INDEX l_count.
+  lt_document_data-doc_size =
+     ( l_count - 1 ) * 255 + strlen( lt_content_txt ).
+  lt_document_data-obj_name  = 'SAPoffice'(002).
+  lt_document_data-obj_descr = l_mail_subject.
+  IF l_wi_header IS INITIAL.
+    l_wi_header-wi_prio = 5.
+  ENDIF.
+  lt_document_data-obj_prio  = l_wi_header-wi_prio.
+  lt_document_data-priority  = l_wi_header-wi_prio.
+
+
+***************************************************************
+* Set l_express flag.                                           *
+***************************************************************
+  IF l_wi_header-wi_prio = 1.
+    l_express = 'X'.
+  ENDIF.
+* Note: In the case when only one message is sent for the whole
+* worklist, we do not calculate whether any high-priority
+* work items are among then.
+
+****************************************************************
+* Create the message to be sent.                               *
+****************************************************************
+  APPEND LINES OF lt_content_txt       TO lt_content.
+  APPEND LINES OF lt_packing_list_txt  TO lt_packing_list.
+
+****************************************************************
+* Send the message                                             *
+****************************************************************
+  IF s_opt-no_shortcuts = 'X'.
+*   No shortcut attachment involved ->
+*   Send one message to several recipients at once.
+
+*   transform recipient list
+    lt_real_recipients-rec_type = c_esc_unix.
+    LOOP AT pt_recipients.
+      lt_real_recipients-receiver = pt_recipients-email.
+*     note 808971
+      IF NOT rt_exit_addr[] IS INITIAL.
+        PERFORM convert_header
+          USING     l_wi_header
+          CHANGING  ls_wi_hdr.
+        l_mail_address = pt_recipients-email.
+        LOOP AT rt_exit_addr.
+          IF NOT rt_exit_addr-low IS INITIAL.
+*           note 2178778: Add authority check for function modules
+            PERFORM check_authority_for_fm USING rt_exit_addr-low.
+            CALL FUNCTION rt_exit_addr-low
+              EXPORTING
+                i_uname  = pt_recipients-uname
+                i_wi_hdr = ls_wi_hdr
+              CHANGING
+                c_email  = l_mail_address.
+            lt_real_recipients-receiver = l_mail_address.
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+      IF NOT lt_real_recipients-receiver IS INITIAL.
+        APPEND lt_real_recipients.
+      ENDIF.
+    ENDLOOP.
+    IF NOT lt_real_recipients[] IS INITIAL.
+*     now send
+      PERFORM so_send
+          TABLES   lt_content
+                   lt_object_header
+                   lt_packing_list
+                   lt_real_recipients
+          USING    p_wi_id
+                   lt_document_data
+                   l_express
+          CHANGING l_sent_to_all.
+    ENDIF.
+  ELSE.
+*   Shortcuts involved -> Send to each recipient individually.
+*   The attachment contains the (one) recipient's Internet mail
+*   address. We send directly to the Internet mail address.
+    PERFORM send_individual
+        TABLES   lt_content
+                 lt_object_header
+                 lt_packing_list
+                 pt_recipients
+        USING    lt_document_data
+                 l_express
+                 l_line_no
+                 l_wi_header
+      CHANGING l_sent_to_all.
+  ENDIF.
+
+  REFRESH pt_recipients.
+
+ENDFORM.                               " SEND_MESSAGES
+
+
+*---------------------------------------------------------------------*
+*       FORM SEND_INDIVIDUAL                                          *
+*---------------------------------------------------------------------*
+*       send to an individual user                                    *
+*---------------------------------------------------------------------*
+FORM send_individual TABLES   pt_content       STRUCTURE solisti1
+                              pt_object_header STRUCTURE solisti1
+                              pt_packing_list  STRUCTURE sopcklsti1
+                              pt_recipients    TYPE t_user_data_tab
+                     USING    p_document_data  LIKE sodocchgi1
+                              p_express        LIKE sos04-l_sex
+                              p_line_no        TYPE i
+                              p_wi_header      LIKE swwwihead
+                     CHANGING p_sent_to_all    LIKE sy-binpt.
+
+  DATA: l_failed,
+        l_success,
+        lt_real_recipients LIKE somlreci1  OCCURS 0 WITH HEADER LINE,
+        lt_content         LIKE solisti1   OCCURS 0,
+        lt_object_header   LIKE solisti1   OCCURS 0,
+        lt_packing_list    TYPE sopcklsti1_tab,
+        l_line_no          TYPE i,
+        ls_wi_hdr          TYPE swr_wihdr.
+
+  LOOP AT pt_recipients.
+    l_line_no = p_line_no.
+
+    REFRESH: lt_real_recipients.
+
+*-   initialize with the values passed in
+    lt_content[]           = pt_content[].
+    lt_object_header[]     = pt_object_header[].
+    lt_packing_list[]      = pt_packing_list[].
+
+*-   add SAP shortcut attachments
+
+    IF x_sc_inb = 'X'.
+*-     shortcut launching the Inbox
+      PERFORM add_shortcut_inbox
+          USING
+             pt_recipients-uname
+             pt_recipients-logon_langu " note: 849251
+             pt_recipients-email
+             p_wi_header
+          CHANGING
+             l_line_no
+             lt_content[]
+             lt_object_header[]
+             lt_packing_list[].
+    ENDIF.
+
+    IF x_sc_dis = 'X'.
+*-     shortcut launching the Inbox
+
+      PERFORM add_shortcut_action
+          USING
+             pt_recipients-uname
+             pt_recipients-logon_langu " note: 849251
+             pt_recipients-email
+             p_wi_header
+             c_action_display
+          CHANGING
+             l_line_no
+             lt_content[]
+             lt_object_header[]
+             lt_packing_list.
+    ENDIF.
+
+    IF x_sc_exe = 'X'.
+*-     shortcut launching the Inbox
+
+      PERFORM add_shortcut_action
+          USING
+             pt_recipients-uname
+             pt_recipients-logon_langu " note: 849251
+             pt_recipients-email
+             p_wi_header
+             c_action_execute
+          CHANGING
+             l_line_no
+             lt_content[]
+             lt_object_header[]
+             lt_packing_list[].
+    ENDIF.
+
+*-  let the user exit modify the address
+    IF NOT rt_exit_addr[] IS INITIAL.
+      PERFORM convert_header
+        USING     p_wi_header
+        CHANGING  ls_wi_hdr.
+      LOOP AT rt_exit_addr.
+        IF NOT rt_exit_addr-low IS INITIAL.
+*         note 2178778: Add authority check for function modules
+          PERFORM check_authority_for_fm USING rt_exit_addr-low.
+          CALL FUNCTION rt_exit_addr-low
+            EXPORTING
+              i_uname  = pt_recipients-uname
+              i_wi_hdr = ls_wi_hdr
+            CHANGING
+              c_email  = pt_recipients-email.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+    IF pt_recipients-email IS INITIAL.
+      CONTINUE.
+    ENDIF.
+
+*-  compute the SAPoffice recipient
+    IF l_proxy_email IS INITIAL.
+*-    use the current recipient
+      CLEAR lt_real_recipients.
+      lt_real_recipients-receiver = pt_recipients-email.
+      lt_real_recipients-rec_type = c_esc_unix.
+      APPEND lt_real_recipients.
+    ELSE.
+*     send via proxy
+*     This currently only works via Internet mail
+      lt_real_recipients-receiver  = l_proxy_email.
+      lt_real_recipients-rec_type = c_esc_unix.
+      APPEND lt_real_recipients.
+    ENDIF.
+
+    PERFORM so_send
+        TABLES   lt_content
+                 lt_object_header
+                 lt_packing_list
+                 lt_real_recipients
+        USING    p_wi_header-wi_id
+                 p_document_data
+                 p_express
+        CHANGING l_success.
+    IF l_success IS INITIAL.
+      l_failed = 'X'.
+    ENDIF.
+
+  ENDLOOP.
+
+  IF l_failed IS INITIAL.
+    p_sent_to_all = 'X'.
+  ENDIF.
+
+ENDFORM.                    "send_individual
+
+*---------------------------------------------------------------------*
+*       FORM SO_SEND                                                  *
+*---------------------------------------------------------------------*
+*       send SAPoffice message                                        *
+*---------------------------------------------------------------------*
+FORM so_send TABLES   pt_content         STRUCTURE solisti1
+                      pt_object_header   STRUCTURE solisti1
+                      pt_packing_list    STRUCTURE sopcklsti1
+                      pt_real_recipients STRUCTURE somlreci1
+             USING    p_wi_id            LIKE swwwihead-wi_id
+                      p_document_data    LIKE sodocchgi1
+                      p_express          LIKE sos04-l_sex
+             CHANGING p_sent_to_all      LIKE sy-binpt.
+
+  DATA:   l_new_object_id  LIKE sofolenti1-object_id.
+
+  CLEAR l_new_object_id.
+  l_items_sent = 'X'.
+
+* Send back a delivery and a non-delivery report.
+  LOOP AT pt_real_recipients.
+*   note 1007893: do not send acknowledgment of receipt
+*   pt_real_recipients-notif_del = 'X'.
+*   pt_real_recipients-notif_ndel = 'X'.
+    IF NOT s_opt-one4all IS INITIAL.
+      pt_real_recipients-blind_copy = 'X'.
+    ENDIF.
+    pt_real_recipients-express    = p_express.
+    MODIFY pt_real_recipients.
+  ENDLOOP.
+
+  CALL FUNCTION 'SO_NEW_DOCUMENT_ATT_SEND_API1'
+    EXPORTING
+      document_data              = p_document_data
+*     put_in_outbox              = ' '
+    IMPORTING
+      sent_to_all                = p_sent_to_all
+      new_object_id              = l_new_object_id
+    TABLES
+      packing_list               = pt_packing_list
+      object_header              = pt_object_header
+      contents_txt               = pt_content
+      receivers                  = pt_real_recipients
+    EXCEPTIONS
+      too_many_receivers         = 1
+      document_not_sent          = 2
+      document_type_not_exist    = 3
+      operation_no_authorization = 4
+      parameter_error            = 5
+      x_error                    = 6
+      enqueue_error              = 7
+      OTHERS                     = 8 ##FM_SUBRC_OK.
+
+  COMMIT WORK.
+
+* Write trace.
+  IF NOT x_alw_tr IS INITIAL.
+    MESSAGE s003(swu_notif) WITH l_new_object_id
+      INTO l_msg_text.
+    lo_log->add_message( ).
+
+* List the addressess.
+    LOOP AT pt_real_recipients WHERE NOT proxy_id IS INITIAL.
+      PERFORM write_send_addressee
+        USING p_wi_id
+              pt_real_recipients.
+    ENDLOOP.
+  ENDIF.
+
+  IF NOT p_sent_to_all IS INITIAL.
+    PERFORM write_send_success_all USING  p_wi_id .
+    ADD 1 TO l_mails_sent.
+  ELSE.
+    PERFORM write_send_failed_all  USING  p_wi_id .
+  ENDIF.
+
+* Delete the original entries. The error code is misleading.
+  DELETE pt_real_recipients WHERE NOT proxy_id IS INITIAL.
+
+  IF NOT x_alw_tr IS INITIAL.
+    LOOP AT pt_real_recipients WHERE retrn_code = 0.
+      PERFORM write_send_success
+        USING p_wi_id
+              pt_real_recipients.
+    ENDLOOP.
+  ENDIF.
+
+  LOOP AT pt_real_recipients WHERE retrn_code <> 0.
+    PERFORM write_send_failed
+      USING p_wi_id
+            pt_real_recipients.
+  ENDLOOP.
+
+ENDFORM.                    "so_send
+
+*---------------------------------------------------------------------*
+*       FORM write_send_failed                                        *
+*---------------------------------------------------------------------*
+*       ........                                                      *
+*---------------------------------------------------------------------*
+FORM write_send_failed  USING  VALUE(wi_id)     LIKE swwwihead-wi_id
+                               lt_real_recipients  STRUCTURE somlreci1.
+
+  DATA: readable_recipients LIKE soudnamei1
+                             OCCURS 0 WITH HEADER LINE,
+        text_buf(200).
+
+  CLEAR readable_recipients.
+
+  readable_recipients-userid = lt_real_recipients-rec_id.
+  CALL FUNCTION 'SO_NAME_CONVERT_API1'
+    EXPORTING
+      name            = readable_recipients
+    TABLES
+      names           = readable_recipients
+    EXCEPTIONS
+      user_not_exist  = 1
+      parameter_error = 2
+      x_error         = 3
+      OTHERS          = 4 ##FM_SUBRC_OK.
+
+*   report error
+  MESSAGE s005(swu_notif)
+    WITH wi_id readable_recipients-fullname
+    INTO l_msg_text ##MG_MISSING.
+  lo_log->add_message( ).
+
+  CASE lt_real_recipients-retrn_code.
+    WHEN 0.                            " successful
+      MESSAGE s373(wz) WITH wi_id
+        INTO l_msg_text ##MG_MISSING.
+    WHEN 34.
+      MESSAGE e376(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN 69.
+      MESSAGE e374(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN 75.
+      MESSAGE e375(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN 80.
+      MESSAGE e377(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN 89.
+      MESSAGE e378(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN 90.
+      MESSAGE e379(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN 91.
+      MESSAGE e380(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN 92.
+      MESSAGE e381(wz) WITH wi_id
+        INTO l_msg_text.
+    WHEN OTHERS.
+      MESSAGE e371(wz) WITH wi_id
+        INTO l_msg_text.
+  ENDCASE.
+  lo_log->add_message( ).
+  WRITE: / l_msg_text.
+
+ENDFORM.                    "write_send_failed
+
+*---------------------------------------------------------------------*
+*       FORM write_send_addressee                                     *
+*---------------------------------------------------------------------*
+FORM write_send_addressee USING  VALUE(wi_id)     LIKE swwwihead-wi_id
+                                 lt_real_recipients  STRUCTURE somlreci1.
+
+  IF  NOT x_alw_tr IS INITIAL.
+    MESSAGE s011(swu_notif) WITH wi_id lt_real_recipients-receiver
+      INTO l_msg_text.
+    lo_log->add_message( ).
+    WRITE: / l_msg_text.
+  ENDIF.
+
+ENDFORM.                    "write_send_addressee
+
+*---------------------------------------------------------------------*
+*       FORM write_send_success                                       *
+*---------------------------------------------------------------------*
+FORM write_send_success
+   USING  VALUE(wi_id)         LIKE swwwihead-wi_id
+          lt_real_recipients   STRUCTURE somlreci1.
+
+  DATA: readable_recipients LIKE soudnamei1
+  OCCURS 0 WITH HEADER LINE.
+
+  CLEAR readable_recipients.
+  readable_recipients-userid = lt_real_recipients-rec_id.
+  CALL FUNCTION 'SO_NAME_CONVERT_API1'
+    EXPORTING
+      name            = readable_recipients
+    TABLES
+      names           = readable_recipients
+    EXCEPTIONS
+      user_not_exist  = 1
+      parameter_error = 2
+      x_error         = 3
+      OTHERS          = 4  ##FM_SUBRC_OK.
+
+  IF NOT x_alw_tr IS INITIAL.
+    IF wi_id IS INITIAL.
+      MESSAGE s012(swu_notif)
+        WITH readable_recipients-fullname
+        INTO l_msg_text.
+    ELSE.
+      MESSAGE s011(swu_notif)
+        WITH wi_id readable_recipients-fullname
+        INTO l_msg_text.
+    ENDIF.
+    lo_log->add_message( ).
+    WRITE: / l_msg_text.
+  ENDIF.
+
+ENDFORM.                    "write_send_success
+
+*&---------------------------------------------------------------------*
+*&      Form  WRITE_ERROR_MSG
+*&---------------------------------------------------------------------*
+FORM write_error_msg USING    p_wi_id LIKE swwwihead-wi_id
+                              p_msgno LIKE t100-msgnr
+                              p_msgv1 LIKE balm-msgv1
+                              p_recipient .
+
+*   Write that some error has occured.
+  IF NOT p_wi_id IS INITIAL AND
+         x_14all IS INITIAL.
+    IF NOT p_wi_id IS INITIAL.
+      SKIP.
+      MESSAGE s009(swu_notif) WITH p_wi_id
+        INTO l_msg_text.
+    ELSE.
+      MESSAGE s010(swu_notif) WITH p_wi_id
+        INTO l_msg_text ##MG_MISSING.
+    ENDIF.
+    WRITE: / l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+
+  IF NOT p_recipient IS INITIAL.
+    WRITE: / 'Addressee:'(m09), 20  p_recipient.
+  ENDIF.
+
+* Write the concrete reason.
+  MESSAGE ID p_msgno TYPE 'E' NUMBER p_msgno WITH p_msgv1
+    INTO l_msg_text.
+  lo_log->add_message( ).
+  WRITE: / l_msg_text.
+  WRITE: /.
+
+ENDFORM.                               " WRITE_ERROR_MSG
+
+*&---------------------------------------------------------------------*
+*&      Form  WRITE_SEND_FAILED_ALL
+*&---------------------------------------------------------------------*
+FORM write_send_failed_all USING    p_wi_id LIKE swwwihead-wi_id.
+
+  IF NOT p_wi_id IS INITIAL.
+    SKIP.
+    MESSAGE s009(swu_notif) WITH p_wi_id
+      INTO l_msg_text.
+  ELSE.
+    MESSAGE s010(swu_notif) WITH p_wi_id
+      INTO l_msg_text ##MG_MISSING.
+  ENDIF.
+  WRITE: / l_msg_text.
+  lo_log->add_message( ).
+
+ENDFORM.                               " WRITE_SEND_FAILED_ALL
+
+*&---------------------------------------------------------------------*
+*&      Form  WRITE_SEND_SUCCESS_ALL
+*&---------------------------------------------------------------------*
+FORM write_send_success_all USING    p_wi_id LIKE swwwihead-wi_id.
+
+  IF NOT x_alw_tr IS INITIAL.          " trace
+    IF NOT p_wi_id IS INITIAL.
+      SKIP.
+      MESSAGE s007(swu_notif) WITH p_wi_id
+        INTO l_msg_text.
+      lo_log->add_message( ).
+    ELSE.
+      MESSAGE s008(swu_notif) WITH p_wi_id
+        INTO l_msg_text ##MG_MISSING.
+      lo_log->add_message( ) ##MG_MISSING.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.                               " WRITE_SEND_SUCCESS_ALL
+
+*&---------------------------------------------------------------------*
+*&      Form  WRITE_NOTHING_SENT
+*&---------------------------------------------------------------------*
+FORM write_nothing_sent.
+
+  IF NOT x_alw_tr IS INITIAL.
+    DESCRIBE TABLE lt_wi_data.
+    MESSAGE s006(swu_notif) WITH sy-tfill
+      INTO l_msg_text.
+    WRITE: / l_msg_text.
+    lo_log->add_message( ).
+  ENDIF.
+
+ENDFORM.                               " WRITE_NOTHING_SENT
+
+*---------------------------------------------------------------------*
+*       FORM SELECT_WORKITEMS                                         *
+*---------------------------------------------------------------------*
+*       select work items from the database                           *
+*---------------------------------------------------------------------*
+FORM select_workitems.
+
+* Select those workitems with the correct task, state and creation
+* date and time.
+
+************************************************************************
+* The select statement encourages one of the database indices          *
+* to be used. Either the task index or the status/type index.          *
+* Tests show that this really does influence the database access       *
+* positively.                                                          *
+* This algorithm will be inefficient when tasks are excluded rather    *
+* than included.                                                       *
+* The combination 'Waiting' and Notification/deadline type             *
+* cannot occur.                                                        *
+************************************************************************
+  IF task_sel[] IS INITIAL.            "No tasks
+*   Use the type/status index.
+
+    SELECT wi_id tclass
+      INTO CORRESPONDING FIELDS OF TABLE lt_wi_data
+      FROM swwwihead
+      WHERE
+         wi_type = wi_normal       AND
+         wi_stat = wi_status_ready AND
+         retry_cnt = '0'           AND
+*        note 969538:
+         crea_tmp > l_from_tstamp  AND
+    crea_tmp <= l_to_tstamp.
+
+    SELECT wi_id tclass
+      APPENDING CORRESPONDING FIELDS OF TABLE lt_wi_data
+      FROM swwwihead
+      WHERE
+         wi_type = wi_deadline     AND
+         wi_stat = wi_status_ready AND
+         retry_cnt = '0'           AND
+*        note 969538:
+         crea_tmp > l_from_tstamp  AND
+         crea_tmp <= l_to_tstamp
+*     note 0000790920 + 1928036
+      %_HINTS
+      INFORMIX 'TABLE &TABLE& ABINDEX(C)'     "Hint4SybaseASE
+      DB2    'USE VALUES FOR OPTIMIZATION'
+    DB2    '&SUBSTITUTE VALUES&'.
+
+*   no longer select waiting work items
+
+  ELSE.
+*   Use the task index.
+    SELECT wi_id tclass
+      INTO CORRESPONDING FIELDS OF TABLE lt_wi_data
+      FROM swwwihead
+      WHERE
+        wi_rh_task IN task_sel AND
+        wi_stat = wi_status_ready AND
+        wi_type = wi_normal       AND
+*       note 969538:
+        crea_tmp > l_from_tstamp  AND
+    crea_tmp <= l_to_tstamp.
+
+*   Add all the deadline items.
+    SELECT wi_id tclass
+      APPENDING CORRESPONDING FIELDS OF TABLE lt_wi_data
+      FROM swwwihead
+      WHERE
+        wi_stat = wi_status_ready AND
+        wi_type = wi_deadline     AND
+*       note 969538:
+        crea_tmp > l_from_tstamp  AND
+        crea_tmp <= l_to_tstamp
+*   note 0000790920 + 1928036
+    %_HINTS
+    INFORMIX 'TABLE &TABLE& ABINDEX(C)'     "Hint4SybaseASE
+    DB2    'USE VALUES FOR OPTIMIZATION'
+    DB2    '&SUBSTITUTE VALUES&'.
+
+*   Filter out the deadline items with wrong task
+    DATA: l_wi_header LIKE swwwihead.
+
+    LOOP AT lt_wi_data.
+
+      CLEAR l_wi_header.
+      CALL FUNCTION 'SWW_WI_HEADER_READ'
+        EXPORTING
+          wi_id     = lt_wi_data-wi_id
+        IMPORTING
+          wi_header = l_wi_header
+        EXCEPTIONS
+          OTHERS    = 1  ##FM_SUBRC_OK.
+
+      CHECK l_wi_header-wi_type = wi_deadline.
+
+      CLEAR swwwihead.
+      SELECT SINGLE * FROM swwwihead
+      WHERE wi_id = l_wi_header-wi_chckwi.
+
+      IF NOT swwwihead-wi_rh_task IN task_sel.
+        DELETE lt_wi_data.
+      ENDIF.
+    ENDLOOP.
+
+  ENDIF.
+
+ENDFORM.                    "select_workitems
+
+*&---------------------------------------------------------------------*
+*&      Form  add_substitutes
+*&---------------------------------------------------------------------*
+*       add substitutes to the list of agents
+*       match task classification against susbstitution profile
+*----------------------------------------------------------------------*
+FORM add_substitutes TABLES   pt_users   STRUCTURE swhactor
+                     USING    p_wi_data  TYPE t_wi_data
+                     CHANGING p_rc       LIKE sy-subrc.
+
+  DATA: l_subst_found,
+        l_rc          LIKE sy-subrc,
+*       lt_user_subst TYPE t_substitution OCCURS 0 WITH HEADER LINE,
+        lt_add_users  TYPE t_substitution OCCURS 0 WITH HEADER LINE,
+        l_tclass      LIKE p_wi_data-tclass.
+
+  DATA: lt_excl_agents LIKE swhactor OCCURS 0 WITH HEADER LINE.
+
+* note 1039329: consider excluded agents
+  CLEAR lt_excl_agents. REFRESH lt_excl_agents[].
+  CALL FUNCTION 'RH_WI_EXCLUDED_AGENTS'
+    EXPORTING
+      act_wi_id     = p_wi_data-wi_id
+    TABLES
+      wi_excl_agent = lt_excl_agents
+    EXCEPTIONS
+      OTHERS        = 0.
+  SORT lt_excl_agents BY objid.
+
+  LOOP AT pt_users.
+*   note 768698: consider all substitutes
+    CLEAR l_subst_found.
+*   check whether a substitution has already been detected
+*   for that user
+    LOOP AT g_substitutions.
+      IF pt_users-objid = g_substitutions-user.
+        l_subst_found = 'X'. " but continue for other substitutes
+        IF NOT g_substitutions-substitute IS INITIAL.
+*          take this one
+          APPEND g_substitutions TO lt_add_users.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+    IF l_subst_found IS INITIAL.
+*      check for new substitutions
+      PERFORM update_substitutions
+         TABLES   lt_add_users
+         USING    pt_users
+         CHANGING l_rc.
+    ENDIF.
+*    add the substitutes with matching tclass/profile
+    LOOP AT lt_add_users.
+*     note 1039329: if user belongs to the excluded agents -> remove
+      READ TABLE lt_excl_agents WITH KEY objid = lt_add_users-substitute
+                                TRANSPORTING NO FIELDS
+                                BINARY SEARCH.
+      IF sy-subrc IS INITIAL.
+        DELETE lt_add_users.
+      ENDIF.
+
+      IF lt_add_users-profile IS INITIAL.
+*       applies to all tclasses
+        CONTINUE.
+      ELSE.
+        l_tclass = p_wi_data-tclass.
+        IF l_tclass = l_noclass.
+          CLEAR l_tclass.
+        ENDIF.
+        READ TABLE lt_77ro
+          WITH KEY reppr  = lt_add_users-profile
+                   tclass = l_tclass
+          TRANSPORTING NO FIELDS.
+        IF sy-subrc NE 0.
+*         no match -> delete
+          DELETE lt_add_users.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+  ENDLOOP.
+
+* update the user table
+  LOOP AT lt_add_users.
+    pt_users-otype =  c_pd_otype_usr.
+    pt_users-objid =  lt_add_users-substitute.
+    APPEND pt_users.
+  ENDLOOP.
+  SORT pt_users BY otype objid.
+  DELETE ADJACENT DUPLICATES FROM pt_users.
+
+ENDFORM.                               " add_substitutes
+
+*&---------------------------------------------------------------------*
+*&      Form update_substitutions
+*&---------------------------------------------------------------------*
+*       determine all substitutes of a given agent
+*       regardless of the profile/tclass
+*----------------------------------------------------------------------*
+FORM update_substitutions TABLES   p_user_subst TYPE t_substitution_tab
+                          USING    p_user_tab   STRUCTURE swhactor
+                          CHANGING p_rc         LIKE sy-subrc.
+
+  DATA: lt_agents      LIKE swhactor   OCCURS 0 WITH HEADER LINE,
+        lt_subst       TYPE t_substitution  OCCURS 0 WITH HEADER LINE,
+        subst_str      LIKE struc      OCCURS 0 WITH HEADER LINE,
+        subst_settings LIKE padd2.
+
+  DATA: lt_inbox_view_pass TYPE TABLE OF hrwfuser_v.
+  DATA: ls_substitute TYPE swragent.
+  DATA: l_timezone TYPE timezone.
+  DATA: l_current_time TYPE timestamp.
+  DATA: l_act_begda TYPE objec-begda.
+  DATA: l_act_endda TYPE objec-endda.
+
+* check for substitution
+*- note 1492911: substitution and time zones
+*     time zone of agent
+  CALL FUNCTION 'RH_GET_TIMEZONE'
+    EXPORTING
+      iv_user_name = p_user_tab-objid
+    IMPORTING
+      ev_timezone  = l_timezone.
+*     current time in time zone of agent
+  GET TIME STAMP FIELD l_current_time.
+  CONVERT TIME STAMP l_current_time TIME ZONE l_timezone INTO DATE l_act_begda.
+  l_act_endda = l_act_begda.
+
+  CALL FUNCTION 'RH_SUBSTITUTES_GET'
+    EXPORTING
+      act_plvar           = space
+      act_otype           = p_user_tab-otype
+      act_objid           = p_user_tab-objid
+      act_begda           = l_act_begda
+      act_endda           = l_act_endda
+*     SHOW_HOLDER_FLAG    = 'X'
+*     AUTHORITY_CHECK     = 'X'
+    TABLES
+*     SUBST_OBJ           =
+      subst_str           = subst_str
+    EXCEPTIONS
+      no_substitute_found = 1
+      OTHERS              = 2.
+  IF sy-subrc NE 0.
+    EXIT.                              " no substitutes
+  ENDIF.
+
+  LOOP AT subst_str.
+    subst_settings = subst_str-vadata.
+
+*    check if substitute has adopted the substitution at the moment
+    IF ( NOT p_psubst IS INITIAL ) AND
+       ( subst_settings-active IS INITIAL ).
+      ls_substitute-otype = subst_str-otype.
+      ls_substitute-objid = subst_str-objid.
+      CALL METHOD cl_swl_substitution=>get_adopted_substitutions
+        EXPORTING
+          i_substitute  = ls_substitute
+        IMPORTING
+          et_inbox_view = lt_inbox_view_pass.
+      READ TABLE lt_inbox_view_pass
+           WITH KEY otype = p_user_tab-otype
+                    objid = p_user_tab-objid
+           TRANSPORTING NO FIELDS.
+      IF sy-subrc <> 0.
+        CONTINUE.
+      ENDIF.
+    ELSE.
+      IF subst_settings-active IS INITIAL.
+        CONTINUE.
+      ENDIF.
+    ENDIF.
+
+
+*    IF NOT subst_settings-active IS INITIAL.
+    IF subst_str-otype = c_pd_otype_usr.
+*       add the entry directly
+      lt_subst-user        = p_user_tab-objid.
+      lt_subst-substitute  = subst_str-objid.
+      lt_subst-profile     = subst_settings-reppr.
+      APPEND lt_subst.
+    ELSE.
+*       result is org unit -> compute associated users
+      CALL FUNCTION 'RH_STRUC_GET'
+        EXPORTING
+          act_otype      = subst_str-otype
+          act_objid      = subst_str-objid
+          act_wegid      = 'SAP_TAGT'
+        TABLES
+          result_tab     = lt_agents
+        EXCEPTIONS
+          no_plvar_found = 1
+          no_entry_found = 2
+          OTHERS         = 3  ##FM_SUBRC_OK.
+      LOOP AT lt_agents.
+        IF lt_agents-otype = c_pd_otype_usr.
+*           add the entry directly
+          lt_subst-user        = subst_str-objid.
+          lt_subst-substitute  = lt_agents-objid.
+          lt_subst-profile     = subst_settings-reppr.
+          APPEND lt_subst.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+*    ENDIF.
+  ENDLOOP.
+
+* append new substitutions to global substitutions and to parameter
+  APPEND LINES OF lt_subst TO g_substitutions.
+  APPEND LINES OF lt_subst TO p_user_subst.
+
+ENDFORM.                    "update_substitutions
+
+*&---------------------------------------------------------------------*
+*&      Form  add_shortcut_inbox
+*&---------------------------------------------------------------------*
+*       Add shortcut attachment launching TX SO01
+*----------------------------------------------------------------------*
+FORM add_shortcut_inbox USING    p_user        TYPE syuname
+                                 p_langu       TYPE sylangu
+                                 p_email       TYPE string
+                                 p_wi_header   TYPE swwwihead
+                        CHANGING p_line_no     TYPE i
+                                 pt_content    TYPE t_solisti1_tab
+                                 pt_header     TYPE t_solisti1_tab
+                                 pt_packing    TYPE sopcklsti1_tab.
+
+*   Add the attachment to the document content.
+
+  DATA: lt_attach  LIKE solisti1   OCCURS 0.
+  DATA: lt_content LIKE solisti1   OCCURS 0.
+  DATA: lt_header  LIKE solisti1   OCCURS 0 WITH HEADER LINE.
+  DATA: lt_packing LIKE sopcklsti1 OCCURS 0 WITH HEADER LINE.
+
+*  take over existing lines
+  lt_header[] = pt_header[].
+  lt_content[] = pt_content[].
+  lt_packing[] = pt_packing[].
+
+*- assemble shortcut
+  PERFORM create_shortcut_inbox
+    USING    p_user p_langu p_email p_logon p_inb_ta
+    CHANGING lt_attach[].
+
+  DESCRIBE TABLE lt_attach LINES l_count.
+  APPEND LINES OF lt_attach TO lt_content.
+
+*-  attachment header
+  CLEAR lt_header. REFRESH lt_header.
+*  lt_header = 'Go to Inbox'(005). "File name
+*  APPEND lt_header.
+*  CLEAR lt_header.
+  lt_header = '&SO_FORMAT=ASC'.
+  " This indicates that it is ASCII.
+  APPEND lt_header.
+
+*-  Update the packing list.
+  CLEAR lt_packing.
+  lt_packing-head_start = 1.
+  lt_packing-head_num = 2.
+  lt_packing-body_start = p_line_no + 1.
+  lt_packing-body_num = l_count.
+  lt_packing-doc_type = 'SAP'.
+  lt_packing-doc_size = 255 * l_count.
+  lt_packing-obj_name = 'INBOX'.
+  lt_packing-obj_descr = 'Go to Inbox'(005).
+*  lt_packing-obj_langu = p_wi_header-wi_lang.
+  lt_packing-obj_langu = p_langu.
+  APPEND lt_packing.
+
+*- pass parameters back
+  ADD l_count TO p_line_no.
+  pt_header[]  = lt_header[].
+  pt_content[] = lt_content[].
+  pt_packing[] = lt_packing[].
+
+ENDFORM.                    " add_shortcut_inbox
+
+*&--------------------------------------------------------------------*
+*&      Form  create_shortcut_inbox
+*&--------------------------------------------------------------------*
+*       create shortcut launching transaction SO01 (SAPoffice Inbox)
+*---------------------------------------------------------------------*
+FORM create_shortcut_inbox
+  USING    p_user          TYPE      syuname
+           p_langu         TYPE      sylangu
+           p_email         TYPE      string
+           p_logon_id      TYPE      text50
+           p_inb_ta        TYPE      tcode
+  CHANGING pt_attach       TYPE      soli_tab.
+
+*- create sap shortcut attachment
+
+*  entered( 'create_inbox_attachment' ).
+
+  DATA: l_logon_id TYPE text50.
+  DATA: l_scrap    TYPE text255.
+  DATA: l_inb_ta   TYPE tcode.
+
+*- assemble piece for email address
+*- is required when sending to proxy
+  IF NOT p_email IS INITIAL.
+    CONCATENATE '[Workflow]' l_crlf                         "#EC NOTEXT
+                'Email='     p_email                        "#EC NOTEXT
+                INTO l_scrap.                               "#EC NOTEXT
+  ENDIF.
+
+*- parameter conversions
+  l_logon_id = p_logon_id.
+
+*- if transaction for inbox is empty, use SO01
+  IF p_inb_ta IS INITIAL.
+    l_inb_ta = 'SO01'.
+  ELSE.
+    l_inb_ta = p_inb_ta.
+  ENDIF.
+
+*- create the shortcut as table
+  CALL FUNCTION 'SWN_CREATE_SHORTCUT'
+    EXPORTING
+      i_transaction  = l_inb_ta
+*     I_REPORT       =
+*     I_SYSTEM_COMMAND        =
+*     i_parameter    =
+      i_saplogon_id  = l_logon_id
+      i_sysid        = sy-sysid
+*     I_GUIPARM      =
+      i_user         = p_user
+      i_language     = p_langu
+      i_windowsize   = 'Normal window'             "#EC NOTEXT
+*     I_TITLE        =
+      i_custom       = l_scrap
+    IMPORTING
+      shortcut_table = pt_attach
+*     SHORTCUT_STRING         =
+    EXCEPTIONS
+*     INCONSISTENT_PARAMETERS = 1
+      OTHERS         = 1.
+
+  IF sy-subrc <> 0.
+    REFRESH pt_attach.
+  ENDIF.
+
+*  leaving( 'create_inbox_attachment' ).
+ENDFORM.                    "CREATE_SHORTCUT_INBOX
+
+*&---------------------------------------------------------------------*
+*&      Form  add_shortcut_action
+*&---------------------------------------------------------------------*
+*       Add shortcut attachment launching TX SWNWIEX
+*----------------------------------------------------------------------*
+FORM add_shortcut_action USING    p_user        TYPE syuname
+                                  p_langu       TYPE sylangu
+                                  p_email       TYPE string
+                                  p_wi_header   TYPE swwwihead
+                                  p_action      TYPE char40
+                         CHANGING p_line_no     TYPE i
+                                  pt_content    TYPE t_solisti1_tab
+                                  pt_header     TYPE t_solisti1_tab
+                                  pt_packing    TYPE sopcklsti1_tab.
+
+*-  Add the attachment to the document content.
+
+  DATA: lt_attach      LIKE solisti1   OCCURS 0.
+  DATA: lt_header      LIKE solisti1   OCCURS 0 WITH HEADER LINE.
+  DATA: lt_content     LIKE solisti1   OCCURS 0.
+  DATA: lt_packing     LIKE sopcklsti1 OCCURS 0 WITH HEADER LINE.
+  DATA: l_caption      TYPE string.
+  DATA: l_action_param TYPE text255.
+
+*- take over existing lines
+  lt_header[] = pt_header[].
+  lt_content[] = pt_content[].
+  lt_packing[] = pt_packing[].
+
+*- assign the appropriate caption
+  CASE p_action.
+    WHEN c_action_display.
+      l_caption = 'Workitem anzeigen'(s06).
+    WHEN c_action_execute.
+      l_caption = 'Workitem ausführen'(s04).
+    WHEN OTHERS.
+      l_caption = 'Unbekannte Aktion'(s03).
+  ENDCASE.
+
+*- assemble shortcut
+  l_action_param = p_wi_header-wi_id.
+  PERFORM create_shortcut_action
+    USING    p_action l_action_param p_user p_langu p_email p_logon
+    CHANGING lt_attach[].
+
+  DESCRIBE TABLE lt_attach LINES l_count.
+  APPEND LINES OF lt_attach TO lt_content.
+
+*-  attachment header
+  CLEAR lt_header. REFRESH lt_header.
+*  lt_header = 'workitem.sap'." File name
+*  APPEND lt_header.
+*  CLEAR lt_header.
+  lt_header = '&SO_FORMAT=ASC'.
+  " This indicates that it is ASCII.
+  APPEND lt_header.
+
+*-  Update the packing list.
+  CLEAR lt_packing.
+  lt_packing-head_start = 1.
+  lt_packing-head_num = 2.
+  lt_packing-body_start = p_line_no + 1.
+  lt_packing-body_num = l_count.
+  lt_packing-doc_type = 'SAP'.
+  lt_packing-doc_size = 255 * l_count.
+  lt_packing-obj_name = 'WORKITEM'.
+  lt_packing-obj_descr = l_caption.
+*  lt_packing-obj_langu = p_wi_header-wi_lang.
+  lt_packing-obj_langu = p_langu.
+  APPEND lt_packing.
+
+*- pass parameters back
+  ADD l_count TO p_line_no.
+  pt_header[]  = lt_header[].
+  pt_content[] = lt_content[].
+  pt_packing[] = lt_packing[].
+
+ENDFORM.                    " add_shortcut_action
+
+*&--------------------------------------------------------------------*
+*&      Form  create_shortcut_action
+*&--------------------------------------------------------------------*
+*       create a shortcut for workitem display or execute
+*---------------------------------------------------------------------*
+FORM create_shortcut_action
+  USING    p_action        TYPE      char40
+           p_action_param  TYPE      text255
+           p_user          TYPE      syuname
+           p_langu         TYPE      sylangu
+           p_email         TYPE      string
+           p_logon_id      TYPE      text50
+  CHANGING pt_attach       TYPE      soli_tab.
+
+*- create sap shortcut attachment
+
+*  entered( 'create_action_wa_attach' ).
+
+  DATA: l_param    TYPE text255.
+  DATA: l_logon_id TYPE text50.
+  DATA: l_scrap    TYPE text255.
+
+*- assemble piece for email address
+*- is required when sending to proxy
+  IF NOT p_email IS INITIAL.
+    CONCATENATE '[Workflow]' l_crlf                         "#EC NOTEXT
+                'Email='     p_email                        "#EC NOTEXT
+                INTO l_scrap.
+  ENDIF.
+
+*- assemble the parameter string
+*- note 1315354: add p_appl for session handling
+  CONCATENATE
+    'p_action=' p_action                                    "#EC NOTEXT
+    '; p_wi_id=' p_action_param                             "#EC NOTEXT
+    '; p_appl=RSWUWFML2'                                    "#EC NOTEXT
+    '; DYNP_OKCODE=ONLI'                                    "#EC NOTEXT
+    INTO l_param.
+
+*- parameter conversions
+  l_logon_id = p_logon_id.
+
+*- create the shortcut as table
+  CALL FUNCTION 'SWN_CREATE_SHORTCUT'
+    EXPORTING
+      i_transaction  = '*swnwiex'                  "#EC NOTEXT
+*     I_REPORT       =
+*     I_SYSTEM_COMMAND        =
+      i_parameter    = l_param
+      i_saplogon_id  = l_logon_id
+      i_sysid        = sy-sysid
+*     I_GUIPARM      =
+      i_user         = p_user
+      i_language     = p_langu
+      i_windowsize   = 'Normal window'             "#EC NOTEXT
+*     I_TITLE        =
+      i_custom       = l_scrap
+    IMPORTING
+      shortcut_table = pt_attach
+*     SHORTCUT_STRING         =
+    EXCEPTIONS
+*     INCONSISTENT_PARAMETERS = 1
+      OTHERS         = 1.
+
+  IF sy-subrc <> 0.
+    REFRESH pt_attach.
+    EXIT.
+  ENDIF.
+
+*  leaving( 'create_action_wa_attach' ).
+ENDFORM.                    "CREATE_SHORTCUT_ACTION
+
+*&--------------------------------------------------------------------*
+*&      Form  get_email_address
+*&--------------------------------------------------------------------*
+*       get the email address from various sources
+*---------------------------------------------------------------------*
+FORM get_email_address
+  USING    p_uname   TYPE syuname
+  CHANGING p_address TYPE t_user_data.
+
+*  init email  "note 780623
+  CLEAR p_address.
+
+*  first try central address management
+  PERFORM get_email_address_cam
+    USING    p_uname
+    CHANGING p_address.
+
+*  if this failed try the auto-forwarding address
+  IF p_address-email IS INITIAL.
+    PERFORM get_email_address_auto_forw
+      USING    p_uname
+      CHANGING p_address.
+  ENDIF.
+ENDFORM.                    "get_email_address
+
+*&--------------------------------------------------------------------*
+*&      Form  get_email_address_cam
+*&--------------------------------------------------------------------*
+*       get address data from the central address management (CAM)
+*---------------------------------------------------------------------*
+FORM get_email_address_cam
+  USING    p_uname   TYPE syuname
+  CHANGING p_address TYPE t_user_data.
+
+*- load user data
+
+  DATA lt_adsmtp   TYPE TABLE OF bapiadsmtp.
+  DATA lt_return   TYPE TABLE OF bapiret2 .
+  DATA ls_address  TYPE bapiaddr3.
+  DATA l_uname     TYPE syuname.
+  DATA ls_defaults TYPE bapidefaul.
+
+  FIELD-SYMBOLS:
+  <adsmtp>   TYPE bapiadsmtp.
+
+*  entered( 'get_address1' ).
+
+*- get the other things
+  MOVE p_uname TO l_uname.
+  CALL FUNCTION 'BAPI_USER_GET_DETAIL'
+    EXPORTING
+      username = l_uname
+    IMPORTING
+      defaults = ls_defaults  " note 849251
+      address  = ls_address
+    TABLES
+      return   = lt_return
+      addsmtp  = lt_adsmtp.
+
+*- language
+  IF NOT ls_address-langu_p IS INITIAL.
+    MOVE ls_address-langu_p TO p_address-langu.
+  ELSE.
+    p_address-langu = sy-langu.
+  ENDIF.
+*- note 849251: logon language
+  IF NOT ls_defaults-langu IS INITIAL.
+    MOVE ls_defaults-langu TO p_address-logon_langu.
+  ELSE.
+    p_address-logon_langu = sy-langu.
+  ENDIF.
+*- email address
+*- use standard email address     (note 746911)
+  READ TABLE lt_adsmtp WITH KEY std_no = 'X'
+                       ASSIGNING <adsmtp>.
+  IF sy-subrc = 0.
+    MOVE <adsmtp>-e_mail TO p_address-email.
+  ELSE.
+*-  use another email address
+    READ TABLE lt_adsmtp ASSIGNING <adsmtp> INDEX 1.
+    IF sy-subrc = 0.
+      MOVE <adsmtp>-e_mail TO p_address-email.
+    ENDIF.
+  ENDIF.
+
+*  leaving( 'get_address1' ).
+
+ENDFORM.                    "get_email_address
+
+
+*&--------------------------------------------------------------------*
+*&      Form  get_email_address_auto_forw
+*&--------------------------------------------------------------------*
+*       get e-mail address from auto-forwarding
+*---------------------------------------------------------------------*
+FORM get_email_address_auto_forw
+  USING    p_uname   TYPE syuname
+  CHANGING p_address TYPE t_user_data.
+
+*- compute email address from auto-forwarding
+  DATA l_uname    TYPE syuname.
+  DATA l_comart   TYPE so_com_art.
+  DATA l_address  TYPE so_rec_ext.
+
+  MOVE p_uname TO l_uname.
+  CALL FUNCTION 'SO_AUTOMATIC_FORWARD_GET'
+    EXPORTING
+      user                  = l_uname
+    IMPORTING
+      address               = l_address
+      comart                = l_comart
+    EXCEPTIONS
+      substitute_not_active = 1
+      x_error               = 2
+      OTHERS                = 3.
+  IF sy-subrc = 0.
+    IF l_comart = c_com_type_int.
+      p_address-email = l_address.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.                    "get_email_address_auto_forw
+
+*&--------------------------------------------------------------------*
+*&      Form  string_to_table
+*&--------------------------------------------------------------------*
+*       Convert string to SO table
+*---------------------------------------------------------------------*
+FORM string_to_table
+  USING    p_string TYPE string
+  CHANGING p_table  TYPE soli_tab.
+
+  DATA: ls_soli  TYPE soli,
+        l_strlen TYPE i,
+        l_string TYPE string.
+
+  CLEAR p_table.
+
+  l_string = p_string.
+
+  l_strlen = strlen( l_string ).
+  CHECK l_strlen NE 0.
+
+* longer than one line
+  WHILE l_strlen GT 255.
+    ls_soli = l_string.
+    APPEND ls_soli TO p_table .
+    SHIFT l_string BY 255 PLACES.
+    l_strlen = strlen( l_string ).
+  ENDWHILE.
+
+  ls_soli = l_string.
+  APPEND ls_soli TO p_table.
+
+ENDFORM.                    "string_to_table
+
+
+*&--------------------------------------------------------------------*
+*&      Form  table_to_string
+*&--------------------------------------------------------------------*
+*       Convert SO table to string
+*---------------------------------------------------------------------*
+FORM table_to_string
+  USING    p_table  TYPE soli_tab
+  CHANGING p_string TYPE string.
+
+  DATA: l_string TYPE string.
+
+  FIELD-SYMBOLS:
+  <line>  TYPE LINE OF soli_tab.
+
+* Trick 17
+  LOOP AT p_table ASSIGNING <line>.
+    CONCATENATE l_string ' ' INTO l_string
+      SEPARATED BY <line>.
+  ENDLOOP.
+
+* remove trailing spaces
+  SHIFT l_string RIGHT DELETING TRAILING space.
+  SHIFT l_string LEFT DELETING LEADING space.
+
+  MOVE l_string TO p_string.
+
+ENDFORM.                    "table_to_string
+
+*&--------------------------------------------------------------------*
+*&      Form  tline_to_string
+*&--------------------------------------------------------------------*
+*       Convert SAPscript table to string
+*---------------------------------------------------------------------*
+FORM tline_to_string
+  TABLES   p_table  "like tline occurs 0
+  CHANGING p_string TYPE string.
+
+  DATA: l_string TYPE string.
+
+  FIELD-SYMBOLS:
+  <line>  TYPE tline.
+
+* Trick 17
+  LOOP AT p_table ASSIGNING <line>.
+    CONCATENATE l_string <line>-tdline l_crlf INTO l_string.
+  ENDLOOP.
+
+* remove trailing spaces
+  SHIFT l_string RIGHT DELETING TRAILING space.
+  SHIFT l_string LEFT DELETING LEADING space.
+
+  MOVE l_string TO p_string.
+
+ENDFORM.                    "tline_to_string
+
+*&--------------------------------------------------------------------*
+*&      Form  get_document
+*&--------------------------------------------------------------------*
+*       retrieve text created with SE61
+*---------------------------------------------------------------------*
+FORM get_document USING    p_type   LIKE dokhl-id
+                           p_object LIKE dokhl-object
+                           p_langu  TYPE sylangu
+                  CHANGING p_text TYPE string.
+
+  DATA: ls_docu_head       LIKE thead .
+  DATA: lt_tline           TYPE TABLE OF tline.
+  DATA: lt_stream          TYPE TABLE OF solisti1.
+
+  IF p_object IS INITIAL.
+    EXIT.
+  ENDIF.
+
+* get text in SAPscript format
+  CALL FUNCTION 'DOCU_GET'
+    EXPORTING
+      id     = p_type
+      langu  = p_langu
+      object = p_object
+    IMPORTING
+      head   = ls_docu_head
+    TABLES
+      line   = lt_tline
+    EXCEPTIONS
+      OTHERS = 1.
+* error handling
+  IF sy-subrc <> 0.
+    MESSAGE ID 'S4' TYPE 'E' NUMBER '601' WITH p_text sy-langu.
+    EXIT.
+  ENDIF.
+* replace includes
+  CALL FUNCTION 'TEXT_INCLUDE_REPLACE'
+    EXPORTING
+      header = ls_docu_head
+    TABLES
+      lines  = lt_tline.
+* note 1506337: replace commands
+  CALL FUNCTION 'TEXT_CONTROL_REPLACE'
+    EXPORTING
+      header = ls_docu_head
+*     PROGRAM               = ' '
+*     REPLACE_COMMENT       = 'X'
+*   IMPORTING
+*     CHANGED               =
+*     NEWHEADER             =
+    TABLES
+      lines  = lt_tline.
+* replace variables
+  CALL FUNCTION 'TEXT_SYMBOL_REPLACE'
+    EXPORTING
+      header = ls_docu_head
+    TABLES
+      lines  = lt_tline.
+* format into text stream
+  CALL FUNCTION 'CONVERT_ITF_TO_STREAM_TEXT'
+    TABLES
+      itf_text    = lt_tline
+      text_stream = lt_stream.
+
+  IF lt_stream[] IS INITIAL.
+    INSERT space INTO lt_stream INDEX 1.
+  ENDIF.
+
+* convert to string.
+  PERFORM table_to_string USING lt_stream CHANGING p_text.
+
+ENDFORM.                    "get_document
+
+
+*&--------------------------------------------------------------------*
+*&      Form  get_dynpro_value
+*&--------------------------------------------------------------------*
+*       get value of a particular field on the selection screen
+*---------------------------------------------------------------------*
+FORM get_dynpro_value USING    p_field
+                      CHANGING p_value.
+
+  DATA: BEGIN OF dynp_tab OCCURS 1.
+          INCLUDE STRUCTURE dynpread.
+  DATA: END OF dynp_tab.
+  DATA: l_repid LIKE  sy-repid.
+
+  CLEAR dynp_tab. REFRESH dynp_tab.
+  dynp_tab-fieldname  = p_field.
+  dynp_tab-stepl      = 0.
+  APPEND dynp_tab.
+
+  l_repid = sy-repid.
+
+  CALL FUNCTION 'DYNP_VALUES_READ'
+    EXPORTING
+      dyname             = l_repid
+      dynumb             = '1000'
+      translate_to_upper = ' '
+    TABLES
+      dynpfields         = dynp_tab
+    EXCEPTIONS
+      OTHERS             = 1.
+
+  IF sy-subrc NE 0.
+    EXIT.
+  ENDIF.
+
+  p_value = dynp_tab-fieldvalue.
+
+ENDFORM.                    "get_dynpro_value
+
+*&--------------------------------------------------------------------*
+*&      Form  select_modified_workitems
+*&--------------------------------------------------------------------*
+*       retrieve SWWLOGHIST entries which contribute
+*---------------------------------------------------------------------*
+FORM select_modified_workitems.
+
+  DATA: lt_swwloghist TYPE STANDARD TABLE OF swwloghist.
+  DATA: lr_method     TYPE RANGE OF funcname.
+  DATA: ls_method     LIKE LINE OF lr_method.
+  DATA: lt_wi_log     TYPE t_wi_data OCCURS 0 WITH HEADER LINE.
+
+  FIELD-SYMBOLS: <swwloghist>  TYPE swwloghist.
+
+*- fill the list of actions affecting workitems in our sense
+  ls_method-sign = 'I'.
+  ls_method-option = 'EQ'.
+  ls_method-low = 'SWW_WI_FORWARD'.
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SWW_WI_BACK'.
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SWW_WI_RESUBMISSION_END'.
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SWW_WI_STATUS_SET_READY'.
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SWD_ADHOC_AGENT_INSERT'. "note 1177811
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SWW_WI_AGENTS_CHANGE'. " note 1177811
+  APPEND ls_method TO lr_method.
+*- note 911750
+  ls_method-low = 'SAP_WAPI_FORWARD_WORKITEM'.
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SAP_WAPI_PUT_BACK_WORKITEM'.
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SAP_WAPI_SET_WORKITEM_STATUS'.
+  APPEND ls_method TO lr_method.
+  ls_method-low = 'SAP_WAPI_END_RESUBMISSION'.
+  APPEND ls_method TO lr_method.
+
+*- select in SWWLOGHIST
+  SELECT wi_id timestamp FROM swwloghist
+         INTO CORRESPONDING FIELDS OF TABLE lt_swwloghist
+         WHERE timestamp GT l_from_tstamp
+         AND   timestamp LE l_to_tstamp
+  AND   method IN lr_method.
+  CHECK lt_swwloghist IS NOT INITIAL.
+
+*- we need only one entry
+  SORT lt_swwloghist BY wi_id.
+  DELETE ADJACENT DUPLICATES FROM lt_swwloghist COMPARING wi_id.
+
+*- select header with range tab filtering by task
+  SELECT wi_id tclass FROM swwwihead
+         INTO CORRESPONDING FIELDS OF TABLE lt_wi_log
+         FOR ALL ENTRIES IN lt_swwloghist
+         WHERE  wi_id EQ lt_swwloghist-wi_id
+         AND    wi_stat = wi_status_ready   " note 1073097
+  AND    wi_rh_task IN task_sel.
+
+
+*- merge with existing ID table
+  APPEND LINES OF lt_wi_log TO lt_wi_data.
+
+*- remove duplicates
+  SORT lt_wi_data BY wi_id.
+  DELETE ADJACENT DUPLICATES FROM lt_wi_data COMPARING wi_id.
+
+ENDFORM.                    "select_modified_workitems
+
+*note 2178778: additional authority check
+*&---------------------------------------------------------------------*
+*&      Form  check_authority_for_fm
+*&---------------------------------------------------------------------*
+*       authority check for function modules
+*----------------------------------------------------------------------*
+*      -->P_function_name  CHAR30
+*----------------------------------------------------------------------*
+FORM check_authority_for_fm  USING    p_function_name TYPE char30.
+
+  DATA: l_group LIKE rs38l-area.
+  DATA: l_fgroup LIKE tadir-obj_name.
+
+  CALL FUNCTION 'FUNCTION_EXISTS'
+    EXPORTING
+      funcname           = p_function_name
+    IMPORTING
+      group              = l_group
+*     INCLUDE            =
+*     NAMESPACE          =
+*     STR_AREA           =
+    EXCEPTIONS
+      function_not_exist = 1
+      OTHERS             = 2.
+  IF sy-subrc <> 0.
+*   abort program with error message
+    MESSAGE e024(swu_notif)
+      WITH p_function_name.
+  ENDIF.
+
+  CONCATENATE 'SAPL' l_group INTO l_fgroup.
+
+  AUTHORITY-CHECK OBJECT 'S_PROGNAM'
+          ID 'P_ACTION' FIELD 'SUBMIT'
+          ID 'P_PROGNAM' FIELD l_fgroup.
+
+  IF sy-subrc <> 0.
+*   abort program with error message
+    MESSAGE e027(swu_notif)
+      WITH 'S_PROGNAM' p_function_name.
+  ENDIF.
+
+ENDFORM.                    "check_authority_for_fm
+*end of - note 2178778: additional authority check - do not add anything directly under this line
+
+*&---------------------------------------------------------------------*
+*&      Form  convert_header
+*&---------------------------------------------------------------------*
+*       convert header formats
+*----------------------------------------------------------------------*
+*      -->P_HEAD  swwwihead
+*      <--P_HDR   swr_wihdr
+*----------------------------------------------------------------------*
+FORM convert_header  USING    p_head TYPE swwwihead
+                     CHANGING p_hdr  TYPE swr_wihdr.
+  MOVE-CORRESPONDING p_head TO p_hdr.
+
+ENDFORM.                    " convert_header
+
+*&---------------------------------------------------------------------*
+*&      Form  get_message_text
+*&---------------------------------------------------------------------*
+*       get message text is a particular language
+*----------------------------------------------------------------------*
+*      -->P_HEAD  swwwihead
+*      <--P_HDR   swr_wihdr
+*----------------------------------------------------------------------*
+FORM get_message_text  USING    p_msgid LIKE t100-arbgb
+                                p_msgno LIKE sy-msgno
+                                p_langu LIKE t100-sprsl
+                                p_msgv1 p_msgv2
+                       CHANGING p_text.
+
+  DATA: l_msgnr TYPE t100-msgnr.
+  DATA: l_msgv1 TYPE balm-msgv1.
+  DATA: l_msgv2 TYPE balm-msgv2.
+
+  l_msgnr = p_msgno.
+  l_msgv1 = p_msgv1.
+  l_msgv2 = p_msgv2.
+
+  CALL FUNCTION 'MESSAGE_PREPARE' " note 1149763
+    EXPORTING
+      language               = p_langu
+      msg_id                 = p_msgid
+      msg_no                 = l_msgnr
+      msg_var1               = l_msgv1
+      msg_var2               = l_msgv2
+*     msg_var3               = ' '
+*     msg_var4               = ' '
+    IMPORTING
+      msg_text               = p_text
+    EXCEPTIONS
+      function_not_completed = 1
+      message_not_found      = 2
+      OTHERS                 = 3.
+  IF sy-subrc <> 0.
+    CLEAR p_text.
+  ENDIF.
+ENDFORM.                    "get_message_text
+
+*Text elements
+*----------------------------------------------------------
+* 001 *** Text for RSWUWFML2 ***
+* 002 SAPoffice
+* 003 Message
+* 004 Execute the work item by opening the attachment
+* 005 Workflow Inbox
+* M01 Program Error or Customizing Error:
+* M02 Form tasks could not be determined
+* M03 Work item:
+* M04 Message sent to:
+* M05 Send failed
+* M06 No description exists
+* M08 No work items to be sent found
+* M09 Recipient:
+* M10 A total of & work items were read
+* M11 Transferred
+* M12 Transfer failed to following recipients:
+* M13 Code
+* M14 Creating trace. ID =
+* S01 SAP System: &. You have received new work items
+* S02 &: You have received new work items
+* S03 Unknown action
+* S04 Execute Work Item
+* S05 Business Workplace
+* S06 Display work item
+* S07 Work Item in SAP System:
+* S08 Log on to the SAP system and open your Workflow inbox
+* T01 Send granularity
+* T02 Add Executable Attachment to Message For
+* T03 Standard Text for Notification
+* T04 Data for an Individual Run (Time Stamp Not Set)
+* T05 Log
+* T06 Instance Data
+* T07 SAP Shortcut Parameter
+* T08 Exits
+
+
+*Selection texts
+*----------------------------------------------------------
+* P_EPIL         After Work Item Description
+* P_EXADR         FM for Determining Address
+* P_EXPRE         FM for Preparatory Phase
+* P_FROMD         From work item creation date
+* P_FROMT         From work item creation time
+* P_INB_TA         Workflow Inbox Transaction
+* P_JOBSUF         Job suffix
+* P_LANGU         Language for E-Mail Texts
+* P_LOGON         SAPLOGON_ID
+* P_NEW         New Work Items Only
+* P_PROL         Before Work Item Description
+* P_PSUBST         With Passive Substitution
+* P_S_NAC         Message Class for Subject
+* P_S_NAN         Message Number for Subject
+* P_TASKS         Tasks (blank = all)
+* P_USER         Users (blank = all)
+* X_14ALL         Collective Message
+* X_ALW_TR         All
+* X_ERR_TR         Errors Only
+* X_N14ALL         One Message per Work Item
+* X_SC_DIS         Work Item Display
+* X_SC_EXE         Work Item Execution
+* X_SC_INB         Workflow Entry
+
+
+*Messages
+*----------------------------------------------------------
+*
+* Message class: S4
+*601   Object & in language & does not exist
+*
+* Message class: SWF_UTL_001
+*200   An Instance of report &1 is currently active
+*
+* Message class: SWU_NOTIF
+*003   SAPoffice document &1 sent
+*004   Work item &1 has no selected agent. Send not possible
+*005   Error when sending work item &1
+*006   & work items were read. None were sent
+*007   Work item &: Send ok
+*008   Work items sent successfully
+*009   Work item &: Attempt to send failed
+*010   Unable to send work items
+*011   Work item &1 sent to &2
+*012   Work items sent to &1
+*013   User &1 has no e-mail address
+*014   Work item &1 being edited
+*015   Selection Setting: &1 = &2
+*020   No system time zone maintained. Unable to select work items
+*021   Error while determining time stamp &1 &2; selection not possible
+*022   & work items sent
+*024   Function module &1 is not available
+*025   Job suffix number already exists.
+*027   Authorization &1 is missing for function module &2. See SAP Note 2743858.
+*
+* Message class: WL
+*583   A system error has occurred in lock management
+*
+* Message class: WZ
+*371   Sending failed for work item &1: Send operation failed
+*373   Message for work item &1 sent to address &2
+*374   Sending failed for work item &1: Sender not completed
+*375   Sending failed for work item &1: Error mailing
+*376   Sending failed for work item &1: User does not exist
+*377   Sending failed for work item &1: Address does not exist
+*378   Sending failed for work item &1: Error in configuration file
+*379   Sending failed for work item &1: Sendmail token not found
+*380   Sending failed for work item &1: Pipe could not be opened
+*381   Sending failed for work item &1: Pipe could not be closed
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

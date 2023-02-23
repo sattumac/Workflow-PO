@@ -1,0 +1,34 @@
+**************************************************************************
+*   Method attributes.                                                   *
+**************************************************************************
+Instantiation: Public
+**************************************************************************
+
+  METHOD get_username_text.
+    DATA: ls_user_usr21 TYPE usr03.
+    DATA: lv_username TYPE usr01-bname.
+    lv_username = username .
+    CHECK username IS NOT INITIAL.
+    CALL FUNCTION 'SUSR_USER_ADDRESS_READ'
+      EXPORTING
+        user_name              = lv_username
+*       READ_DB_DIRECTLY       = ' '
+        cache_results          = 'X'
+      IMPORTING
+*       USER_ADDRESS           =
+        user_usr03             = ls_user_usr21
+*       USER_USR21             =
+*       EV_USER_WITHOUT_ADDRESS       =
+      EXCEPTIONS
+        user_address_not_found = 1
+        OTHERS                 = 2.
+    IF sy-subrc EQ 0.
+      IF ls_user_usr21 IS NOT INITIAL.
+        username_text = |{ ls_user_usr21-name1 }{ ls_user_usr21-name2 }|.
+      ENDIF.
+    ENDIF.
+
+  ENDMETHOD.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

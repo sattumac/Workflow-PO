@@ -1,0 +1,29 @@
+**************************************************************************
+*   Method attributes.                                                   *
+**************************************************************************
+Instantiation: Private
+**************************************************************************
+
+  METHOD convert_table_to_string.
+    DATA: l_string TYPE string.
+
+    FIELD-SYMBOLS:
+    <line>  TYPE LINE OF swftlisti1.
+
+
+* Trick 17
+    LOOP AT line_table ASSIGNING <line>.
+      CONCATENATE l_string ' ' INTO l_string
+        SEPARATED BY <line>.
+    ENDLOOP.
+
+* remove trailing spaces
+    SHIFT l_string RIGHT DELETING TRAILING space.
+    SHIFT l_string LEFT DELETING LEADING space.
+
+    MOVE l_string TO comments.
+
+  ENDMETHOD.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756

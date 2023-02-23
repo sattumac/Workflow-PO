@@ -1,0 +1,54 @@
+**************************************************************************
+*   Method attributes.                                                   *
+**************************************************************************
+Instantiation: Private
+**************************************************************************
+
+  METHOD get_approval_comments.
+    DATA: lt_subcontainer     TYPE STANDARD TABLE OF swr_cont,
+          lt_simple_container TYPE STANDARD TABLE OF swr_cont,
+          lv_sy_subrc         TYPE sy-subrc,
+          lv_xml_container    TYPE xstring,
+          lv_xml_schema       TYPE xstring.
+
+*--------------------------------------------------------------------*
+    CALL FUNCTION 'SAP_WAPI_READ_CONTAINER'
+      EXPORTING
+        workitem_id              = workitem_id "l_wi_header-wi_chckwi
+      IMPORTING
+        return_code              = lv_sy_subrc
+        ifs_xml_container        = lv_xml_container
+        ifs_xml_container_schema = lv_xml_schema
+      TABLES
+        simple_container         = lt_simple_container[]
+        subcontainer_all_objects = lt_subcontainer[].
+
+    IF lt_subcontainer[] IS NOT INITIAL.
+      IF line_exists( lt_subcontainer[ element = '_ATTACH_COMMENT_OBJECTS' ] ).
+        DATA(doc_id) = CONV sofolenti1-doc_id( lt_subcontainer[ element = '_ATTACH_COMMENT_OBJECTS' ]-value+0(46) ).
+
+        DATA: lt_comment TYPE STANDARD TABLE OF solisti1.
+        CALL FUNCTION 'SO_DOCUMENT_READ_API1'
+          EXPORTING
+            document_id                = doc_id
+          TABLES
+            object_content             = lt_comment[]
+          EXCEPTIONS
+            document_id_not_exist      = 1
+            operation_no_authorization = 2
+            x_error                    = 3
+            OTHERS                     = 4.
+        IF sy-subrc EQ 0.
+          IF lt_comment[] IS NOT INITIAL.
+*-- Approval Commnets.
+            approval_comments = convert_table_to_string( line_table = lt_comment[] ).
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+*-- Level Information
+    level = strlen( ls_purchase_order-frgzu ).
+  ENDMETHOD.
+
+----------------------------------------------------------------------------------
+Extracted by Mass Download version 1.5.5 - E.G.Mellodew. 1998-2023. Sap Release 756
