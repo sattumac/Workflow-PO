@@ -1,0 +1,38 @@
+﻿Dear &1 ,</p>
+</p>
+
+
+Please note, PO Number of Value &3 is waiting for yourapproval
+</p>
+
+Below is the Quick Summary :-</p>
+                        Company Code - &4</p>
+                        Purchase Group - &5</p>
+                        Purchase Org - &6</p>
+
+      PO Creation Date - &7</p>
+                        Supplier - &8</p>
+                        Supplier Code- &9</p>
+                        Total number of Line-items - &10</p>
+
+</p>
+To view the Details of Po, please Login to Fiori Launchpad via 
+Below Link.</p>
+And Navigate to My Inbox App for Approval/Rejection of PO.</p>
+
+</p>
+My Inbox Hyper link to open the PO
+<A HREF="https://erpworks.rebelfoods.com:8081/sap/bc/ui2/flp#Work
+flowTask-displayInbox?allItems=true11/TaskColl
+ection(SAP__Origin='LOCAL_TGW',InstanceID='&11')">Link</A></p>
+
+</p>
+
+Thanks,</p>
+
+Workflow Admin</p>
+
+
+
+
+
